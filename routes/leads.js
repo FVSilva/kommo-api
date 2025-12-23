@@ -1,4 +1,4 @@
-import { Router } from "express";
+import express from "express";
 import axios from "axios";
 import cors from "cors";
 import compression from "compression";
@@ -7,11 +7,9 @@ import https from "https";
 import axiosRetry from "axios-retry";
 import fs from "fs";
 
-const router = Router();
-
 // =================== CONFIG ===================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nzg0ODVjZmIwMmMxMDRmNzkwOTg4YmIxYmVlMDNmNjkzNzIyNGJlMGFiZTI3NGVjMzZiNDhlYjIwODVkYjY3ODA3NWM1MTg5In0.eyJhdWQiOiJlMDhkMWRkNy04MTE0LTQ1MGUtYmRlNS01NTRmNGEzZjU3N2EiLCJqdGkiOiIxNDRkN2I2Nzc4NDg1Y2ZiMDJjMTA0Zjc5MDk4OGJiMWJlZTAzZjY5MzcyMjRiZTBhYmUyNzRlYzM2YjQ4ZWIyMDg1ZGI2NzgwNzVjNTE4OSIsImlhdCI6MTc2MzA3Nzc0NiwibmJmIjoxNzYzMDc3NzQ2LCJleHAiOjE4NTkxNTUyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJjcm0iLCJmaWxlcyIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiLCJwdXNoX25vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiODIzYzVkZTQtMjdiMS00MjAzLTk4M2YtNjAyN2Q4OGU0NmRhIiwidXNlcl9mbGFncyI6MCwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.mVylUY-n2xSzn5vt8ldTMPY03K0IQBvRUsmgvXdSZasLJFZo8lbkaKbEzpKUSrYoDztZ8tzTD4vxILOUzb05S0teG0RYnOIzwb7Y_kpVzn_oV8-BeGpRDWPnHzBkY0MLTKGZMD-ll5PnhtLrj3TF-6umDGkzq_uJvPUauEIOu3rET-AGrWVz0UsURvlvaQ5h53v0Hc2-Daoya4iz6_JXNnNQyMEHA0sz3wJLg9v1ofF--IRNyo5WeY2R41ppQ1AfniRlvq5Iwkj1W10LJZOUJpHsU8B16PpU1VQJV1gI7WwPIaqOZaqpny8xnL6OVRbF0aGfJS0gOnflR6eCRLR25w";
+const TOKEN = "Bearer SEU_TOKEN_AQUI";
 
 const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
@@ -43,7 +41,7 @@ async function safeGet(url, params = {}) {
   return {};
 }
 
-// =================== STATUS MAP ===================
+// =================== STATUS MAP (INALTERADO) ===================
 const FIXED_STATUS_MAP = {
   63763579: "Leads de Entrada",
   66551103: "WhatsApp",
@@ -65,6 +63,35 @@ const FIXED_STATUS_MAP = {
   142: "Lead - Convertido",
   143: "Lead - Perdido",
 };
+
+// =================== PIPELINES ===================
+async function fetchPipelineStatusMaps() {
+  const data = await safeGet(`${DOMAIN}/api/v4/leads/pipelines`);
+  const pipelines = data?._embedded?.pipelines ?? [];
+
+  const pipelineNameById = new Map();
+  const statusInfoById = new Map();
+
+  for (const p of pipelines) {
+    pipelineNameById.set(p.id, p.name);
+    for (const s of p.statuses ?? []) {
+      statusInfoById.set(s.id, {
+        pipeline_id: p.id,
+        pipeline_name: p.name,
+        status_id: s.id,
+        status_name: s.name,
+      });
+    }
+  }
+
+  for (const [id, name] of Object.entries(FIXED_STATUS_MAP)) {
+    const sid = Number(id);
+    const old = statusInfoById.get(sid) || {};
+    statusInfoById.set(sid, { ...old, status_id: sid, status_name: name });
+  }
+
+  return { pipelineNameById, statusInfoById };
+}
 
 // =================== USERS ===================
 async function fetchUsersMap() {
@@ -98,15 +125,71 @@ async function fetchLeadsSince() {
 }
 
 // =================== CONTACTS ===================
-async function fetchContactsByIds(ids) {
+async function fetchContactsByIds(idList) {
+  if (!idList.length) return new Map();
+  const uniq = [...new Set(idList)];
   const out = new Map();
-  for (let i = 0; i < ids.length; i += CONTACTS_CHUNK) {
+
+  for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
+    const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
     const params = {};
-    ids.slice(i, i + CONTACTS_CHUNK).forEach((id, idx) => (params[`id[${idx}]`] = id));
+    chunk.forEach((id, idx) => (params[`id[${idx}]`] = id));
+
     const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
     for (const c of data?._embedded?.contacts ?? []) out.set(c.id, c);
   }
   return out;
+}
+
+// =================== HELPERS ===================
+function normalizeCF(arr, prefix = "") {
+  const out = {};
+  (arr || []).forEach((f) => {
+    const key = prefix + (f.field_name || `field_${f.field_id}`);
+    const val = (f.values || []).map((v) => v.value).filter(Boolean).join(", ");
+    out[key] = val || null;
+  });
+  return out;
+}
+
+function pickMainContact(lead, contactsMap) {
+  const rel = lead?._embedded?.contacts ?? [];
+  if (!rel.length) return null;
+  const main = rel.find((c) => c.is_main) || rel[0];
+  return contactsMap.get(main.id) || null;
+}
+
+// =================== FLATTEN (AJUSTE ÚNICO AQUI) ===================
+function flattenLead(lead, usersMap, pipelineNameById, statusInfoById, contactsMap) {
+  const statusId = Number(lead.status_id);
+  const statusInfo = statusInfoById.get(statusId) ?? {};
+  const contact = pickMainContact(lead, contactsMap);
+
+  return {
+    id: lead.id,
+    name: lead.name,
+    price: lead.price || 0,
+
+    pipeline_id: lead.pipeline_id,
+    pipeline_name: pipelineNameById.get(lead.pipeline_id) || null,
+
+    status_id: statusId,
+    status_name: statusInfo.status_name || FIXED_STATUS_MAP[statusId] || null,
+
+    // 🔧 AJUSTE SEGURO — CAMPO NATIVO KOMMO
+    responsible_user_id: lead.responsible_user_id || null,
+    responsible_user_name: usersMap.get(lead.responsible_user_id) || null,
+
+    created_at: dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss"),
+    updated_at: lead.updated_at ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss") : null,
+    closed_at: lead.closed_at ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss") : null,
+
+    ...normalizeCF(lead.custom_fields_values),
+    ...normalizeCF(contact?.custom_fields_values, "contact_"),
+
+    contact_id: contact?.id || null,
+    contact_name: contact?.name || null,
+  };
 }
 
 // =================== CACHE ===================
@@ -122,26 +205,29 @@ function loadCache() {
   } catch {}
 }
 
-// =================== BUILD ===================
 async function buildAndCache() {
-  const [leads, usersMap] = await Promise.all([
+  const [leads, usersMap, maps] = await Promise.all([
     fetchLeadsSince(),
     fetchUsersMap(),
+    fetchPipelineStatusMaps(),
   ]);
 
   const contactIds = leads.flatMap((l) => l._embedded?.contacts?.map((c) => c.id) ?? []);
   const contactsMap = await fetchContactsByIds(contactIds);
 
-  IN_MEMORY.rows = leads.map((l) => ({
-    ...l,
-    responsible_user_name: usersMap.get(l.responsible_user_id) || null,
-  }));
+  IN_MEMORY.rows = leads.map((l) =>
+    flattenLead(l, usersMap, maps.pipelineNameById, maps.statusInfoById, contactsMap)
+  );
 
   saveCache();
 }
 
-// =================== ROUTE ===================
-router.get("/", async (req, res) => {
+// =================== EXPRESS ===================
+const app = express();
+app.use(cors());
+app.use(compression());
+
+app.get("/leads", async (req, res) => {
   if (!IN_MEMORY.rows.length) {
     loadCache();
     if (!IN_MEMORY.rows.length) await buildAndCache();
@@ -149,4 +235,8 @@ router.get("/", async (req, res) => {
   res.json(IN_MEMORY.rows);
 });
 
-export default router;
+app.listen(3000, async () => {
+  loadCache();
+  if (!IN_MEMORY.rows.length) await buildAndCache();
+  setInterval(buildAndCache, UPDATE_INTERVAL_MINUTES * 60000);
+});
