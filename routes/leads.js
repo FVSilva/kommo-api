@@ -1,7 +1,5 @@
 import { Router } from "express";
 import axios from "axios";
-import cors from "cors";
-import compression from "compression";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import https from "https";
@@ -14,33 +12,35 @@ const router = Router();
 
 // =================== CONFIG ===================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nzg0ODVjZmIwMmMxMDRmNzkwOTg4YmIxYmVlMDNmNjkzNzIyNGJlMGFiZTI3NGVjMzZiNDhlYjIwODVkYjY3ODA3NWM1MTg5In0.eyJhdWQiOiJlMDhkMWRkNy04MTE0LTQ1MGUtYmRlNS01NTRmNGEzZjU3N2EiLCJqdGkiOiIxNDRkN2I2Nzc4NDg1Y2ZiMDJjMTA0Zjc5MDk4OGJiMWJlZTAzZjY5MzcyMjRiZTBhYmUyNzRlYzM2YjQ4ZWIyMDg1ZGI2NzgwNzVjNTE4OSIsImlhdCI6MTc2MzA3Nzc0NiwibmJmIjoxNzYzMDc3NzQ2LCJleHAiOjE4NTkxNTUyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJjcm0iLCJmaWxlcyIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiLCJwdXNoX25vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiODIzYzVkZTQtMjdiMS00MjAzLTk4M2YtNjAyN2Q4OGU0NmRhIiwidXNlcl9mbGFncyI6MCwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.mVylUY-n2xSzn5vt8ldTMPY03K0IQBvRUsmgvXdSZasLJFZo8lbkaKbEzpKUSrYoDztZ8tzTD4vxILOUzb05S0teG0RYnOIzwb7Y_kpVzn_oV8-BeGpRDWPnHzBkY0MLTKGZMD-ll5PnhtLrj3TF-6umDGkzq_uJvPUauEIOu3rET-AGrWVz0UsURvlvaQ5h53v0Hc2-Daoya4iz6_JXNnNQyMEHA0sz3wJLg9v1ofF--IRNyo5WeY2R41ppQ1AfniRlvq5Iwkj1W10LJZOUJpHsU8B16PpU1VQJV1gI7WwPIaqOZaqpny8xnL6OVRbF0aGfJS0gOnflR6eCRLR25w";
+const TOKEN = "Bearer SEU_TOKEN_AQUI";
 
 const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
-const CONTACTS_CHUNK = 40;
 const THROTTLE_MS = 300;
 const UPDATE_INTERVAL_MINUTES = 30;
-const CACHE_FILE = "./cache.json";
+const CACHE_FILE = "./cache_leads.json";
 
-// =================== HTTP INFRA ===================
+// =================== HTTP ===================
 axiosRetry(axios, { retries: 5, retryDelay: axiosRetry.exponentialDelay });
-const httpAgent = new https.Agent({ keepAlive: true, maxSockets: 60 });
+const httpAgent = new https.Agent({ keepAlive: true, maxSockets: 50 });
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function safeGet(url, params = {}) {
-  for (let attempt = 1; attempt <= 10; attempt++) {
+  for (let attempt = 1; attempt <= 8; attempt++) {
     try {
       await wait(THROTTLE_MS);
       const res = await axios.get(url, {
-        headers: { Authorization: TOKEN, Accept: "application/json" },
+        headers: {
+          Authorization: TOKEN,
+          Accept: "application/json",
+        },
         params,
-        timeout: 120000,
+        timeout: 60000,
         httpAgent,
       });
       return res.data || {};
-    } catch {
-      await wait(2000);
+    } catch (err) {
+      await wait(1500);
     }
   }
   return {};
@@ -49,7 +49,23 @@ async function safeGet(url, params = {}) {
 // =================== USERS ===================
 async function fetchUsersMap() {
   const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
-  return new Map((data?._embedded?.users ?? []).map((u) => [u.id, u.name]));
+  return new Map(
+    (data?._embedded?.users ?? []).map((u) => [Number(u.id), u.name])
+  );
+}
+
+// =================== STATUS ===================
+async function fetchStatusMap() {
+  const data = await safeGet(`${DOMAIN}/api/v4/leads/pipelines`);
+  const map = new Map();
+
+  for (const pipeline of data?._embedded?.pipelines ?? []) {
+    for (const status of pipeline.statuses ?? []) {
+      map.set(Number(status.id), status.name);
+    }
+  }
+
+  return map;
 }
 
 // =================== LEADS ===================
@@ -63,12 +79,17 @@ async function fetchLeadsSince() {
     const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
       limit: LIMIT_PER_PAGE,
       page,
-      filter: { created_at: { from: startUnix, to: endUnix } },
-      with: "contacts",
+      filter: {
+        created_at: {
+          from: startUnix,
+          to: endUnix,
+        },
+      },
     });
 
     const rows = data?._embedded?.leads ?? [];
     if (!rows.length) break;
+
     all.push(...rows);
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
@@ -78,11 +99,10 @@ async function fetchLeadsSince() {
 }
 
 // =================== FLATTEN ===================
-function flattenLead(lead, usersMap) {
-  const responsibleId =
-    lead.responsible_user_id ||
-    lead.created_by ||
-    null;
+function flattenLead(lead, usersMap, statusMap) {
+  const responsibleId = Number(
+    lead.responsible_user_id ?? lead.created_by ?? null
+  );
 
   return {
     id: lead.id,
@@ -91,11 +111,12 @@ function flattenLead(lead, usersMap) {
 
     pipeline_id: lead.pipeline_id,
     status_id: lead.status_id,
+    status_name: statusMap.get(Number(lead.status_id)) || null,
 
     responsible_user_id: responsibleId,
     responsible_user_name: responsibleId
-      ? usersMap.get(responsibleId) || "Usuário não encontrado"
-      : "Sem responsável",
+      ? usersMap.get(responsibleId) || null
+      : null,
 
     created_at: lead.created_at
       ? dayjs.unix(lead.created_at).utc().format("YYYY-MM-DD HH:mm:ss")
@@ -112,27 +133,30 @@ function flattenLead(lead, usersMap) {
 }
 
 // =================== CACHE ===================
-let IN_MEMORY = { rows: [] };
+let CACHE = { rows: [] };
 
 function saveCache() {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY.rows, null, 2));
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(CACHE.rows, null, 2));
 }
 
 function loadCache() {
   try {
-    IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-  } catch {}
+    CACHE.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+  } catch {
+    CACHE.rows = [];
+  }
 }
 
 // =================== BUILD ===================
 async function buildAndCache() {
-  const [leads, usersMap] = await Promise.all([
+  const [leads, usersMap, statusMap] = await Promise.all([
     fetchLeadsSince(),
     fetchUsersMap(),
+    fetchStatusMap(),
   ]);
 
-  IN_MEMORY.rows = leads.map((l) =>
-    flattenLead(l, usersMap)
+  CACHE.rows = leads.map((l) =>
+    flattenLead(l, usersMap, statusMap)
   );
 
   saveCache();
@@ -140,11 +164,18 @@ async function buildAndCache() {
 
 // =================== ROUTE ===================
 router.get("/", async (req, res) => {
-  if (!IN_MEMORY.rows.length) {
+  if (!CACHE.rows.length) {
     loadCache();
-    if (!IN_MEMORY.rows.length) await buildAndCache();
+    if (!CACHE.rows.length) await buildAndCache();
   }
-  res.json(IN_MEMORY.rows);
+  res.json(CACHE.rows);
 });
+
+// =================== AUTO UPDATE ===================
+loadCache();
+if (!CACHE.rows.length) {
+  buildAndCache();
+}
+setInterval(buildAndCache, UPDATE_INTERVAL_MINUTES * 60000);
 
 export default router;
