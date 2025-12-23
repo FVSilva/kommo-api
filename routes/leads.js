@@ -3,9 +3,12 @@ import axios from "axios";
 import cors from "cors";
 import compression from "compression";
 import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc.js";
 import https from "https";
 import axiosRetry from "axios-retry";
 import fs from "fs";
+
+dayjs.extend(utc);
 
 const router = Router();
 
@@ -43,29 +46,6 @@ async function safeGet(url, params = {}) {
   return {};
 }
 
-// =================== STATUS MAP ===================
-const FIXED_STATUS_MAP = {
-  63763579: "Leads de Entrada",
-  66551103: "WhatsApp",
-  63763583: "Contato Inicial",
-  65147703: "Leads Nativo",
-  66735635: "Lista de Transmissão",
-  65962599: "Recaptação",
-  65158735: "Em Atendimento",
-  63763587: "Em Negociação",
-  67871247: "Cliente Futuro",
-  63763591: "Aguardando Documentos",
-  63763595: "Gerar Proposta",
-  64012623: "Aguardando Declaração de Saúde",
-  64012627: "Aguardando Operadora",
-  64012631: "Pendente Informação ADM",
-  64012635: "Aguardando Assinatura / 2° Aceite",
-  64012639: "Acompanhar 1° Pagamento",
-  69374483: "Lead Ganho | Indicação",
-  142: "Lead - Convertido",
-  143: "Lead - Perdido",
-};
-
 // =================== USERS ===================
 async function fetchUsersMap() {
   const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
@@ -97,16 +77,38 @@ async function fetchLeadsSince() {
   return all;
 }
 
-// =================== CONTACTS ===================
-async function fetchContactsByIds(ids) {
-  const out = new Map();
-  for (let i = 0; i < ids.length; i += CONTACTS_CHUNK) {
-    const params = {};
-    ids.slice(i, i + CONTACTS_CHUNK).forEach((id, idx) => (params[`id[${idx}]`] = id));
-    const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
-    for (const c of data?._embedded?.contacts ?? []) out.set(c.id, c);
-  }
-  return out;
+// =================== FLATTEN ===================
+function flattenLead(lead, usersMap) {
+  const responsibleId =
+    lead.responsible_user_id ||
+    lead.created_by ||
+    null;
+
+  return {
+    id: lead.id,
+    name: lead.name,
+    price: lead.price || 0,
+
+    pipeline_id: lead.pipeline_id,
+    status_id: lead.status_id,
+
+    responsible_user_id: responsibleId,
+    responsible_user_name: responsibleId
+      ? usersMap.get(responsibleId) || "Usuário não encontrado"
+      : "Sem responsável",
+
+    created_at: lead.created_at
+      ? dayjs.unix(lead.created_at).utc().format("YYYY-MM-DD HH:mm:ss")
+      : null,
+
+    updated_at: lead.updated_at
+      ? dayjs.unix(lead.updated_at).utc().format("YYYY-MM-DD HH:mm:ss")
+      : null,
+
+    closed_at: lead.closed_at
+      ? dayjs.unix(lead.closed_at).utc().format("YYYY-MM-DD HH:mm:ss")
+      : null,
+  };
 }
 
 // =================== CACHE ===================
@@ -129,13 +131,9 @@ async function buildAndCache() {
     fetchUsersMap(),
   ]);
 
-  const contactIds = leads.flatMap((l) => l._embedded?.contacts?.map((c) => c.id) ?? []);
-  const contactsMap = await fetchContactsByIds(contactIds);
-
-  IN_MEMORY.rows = leads.map((l) => ({
-    ...l,
-    responsible_user_name: usersMap.get(l.responsible_user_id) || null,
-  }));
+  IN_MEMORY.rows = leads.map((l) =>
+    flattenLead(l, usersMap)
+  );
 
   saveCache();
 }
