@@ -1,4 +1,4 @@
-import express from "express";
+import { Router } from "express";
 import axios from "axios";
 import cors from "cors";
 import compression from "compression";
@@ -6,6 +6,8 @@ import dayjs from "dayjs";
 import https from "https";
 import axiosRetry from "axios-retry";
 import fs from "fs";
+
+const router = Router();
 
 // =================== CONFIG ===================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
@@ -41,7 +43,7 @@ async function safeGet(url, params = {}) {
   return {};
 }
 
-// =================== STATUS MAP (INALTERADO) ===================
+// =================== STATUS MAP ===================
 const FIXED_STATUS_MAP = {
   63763579: "Leads de Entrada",
   66551103: "WhatsApp",
@@ -103,6 +105,7 @@ async function fetchUsersMap() {
 async function fetchLeadsSince() {
   const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
   const endUnix = dayjs().unix();
+
   let page = 1;
   const all = [];
 
@@ -159,7 +162,7 @@ function pickMainContact(lead, contactsMap) {
   return contactsMap.get(main.id) || null;
 }
 
-// =================== FLATTEN (AJUSTE ÚNICO AQUI) ===================
+// =================== FLATTEN ===================
 function flattenLead(lead, usersMap, pipelineNameById, statusInfoById, contactsMap) {
   const statusId = Number(lead.status_id);
   const statusInfo = statusInfoById.get(statusId) ?? {};
@@ -176,7 +179,6 @@ function flattenLead(lead, usersMap, pipelineNameById, statusInfoById, contactsM
     status_id: statusId,
     status_name: statusInfo.status_name || FIXED_STATUS_MAP[statusId] || null,
 
-    // 🔧 AJUSTE SEGURO — CAMPO NATIVO KOMMO
     responsible_user_id: lead.responsible_user_id || null,
     responsible_user_name: usersMap.get(lead.responsible_user_id) || null,
 
@@ -222,12 +224,8 @@ async function buildAndCache() {
   saveCache();
 }
 
-// =================== EXPRESS ===================
-const app = express();
-app.use(cors());
-app.use(compression());
-
-app.get("/leads", async (req, res) => {
+// =================== ROUTE ===================
+router.get("/", async (req, res) => {
   if (!IN_MEMORY.rows.length) {
     loadCache();
     if (!IN_MEMORY.rows.length) await buildAndCache();
@@ -235,8 +233,6 @@ app.get("/leads", async (req, res) => {
   res.json(IN_MEMORY.rows);
 });
 
-app.listen(3000, async () => {
-  loadCache();
-  if (!IN_MEMORY.rows.length) await buildAndCache();
-  setInterval(buildAndCache, UPDATE_INTERVAL_MINUTES * 60000);
-});
+setInterval(buildAndCache, UPDATE_INTERVAL_MINUTES * 60000);
+
+export default router;
