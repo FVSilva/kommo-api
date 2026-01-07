@@ -13,9 +13,9 @@ const router = Router();
 
 // =================== CONFIG ===================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nzg0ODVjZmIwMmMxMDRmNzkwOTg4YmIxYmVlMDNmNjkzNzIyNGJlMGFiZTI3NGVjMzZiNDhlYjIwODVkYjY3ODA3NWM1MTg5In0....";
+const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nzg0ODVjZmIwMmMxMDRmNzkwOTg4YmIxYmVlMDNmNjkzNzIyNGJlMGFiZTI3NGVjMzZiNDhlYjIwODVkYjY3ODA3NWM1MTg5In0.eyJhdWQiOiJlMDhkMWRkNy04MTE0LTQ1MGUtYmRlNS01NTRmNGEzZjU3N2EiLCJqdGkiOiIxNDRkN2I2Nzc4NDg1Y2ZiMDJjMTA0Zjc5MDk4OGJiMWJlZTAzZjY5MzcyMjRiZTBhYmUyNzRlYzM2YjQ4ZWIyMDg1ZGI2NzgwNzVjNTE4OSIsImlhdCI6MTc2MzA3Nzc0NiwibmJmIjoxNzYzMDc3NzQ2LCJleHAiOjE4NTkxNTUyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJjcm0iLCJmaWxlcyIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiLCJwdXNoX25vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiODIzYzVkZTQtMjdiMS00MjAzLTk4M2YtNjAyN2Q4OGU0NmRhIiwidXNlcl9mbGFncyI6MCwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.mVylUY-n2xSzn5vt8ldTMPY03K0IQBvRUsmgvXdSZasLJFZo8lbkaKbEzpKUSrYoDztZ8tzTD4vxILOUzb05S0teG0RYnOIzwb7Y_kpVzn_oV8-BeGpRDWPnHzBkY0MLTKGZMD-ll5PnhtLrj3TF-6umDGkzq_uJvPUauEIOu3rET-AGrWVz0UsURvlvaQ5h53v0Hc2-Daoya4iz6_JXNnNQyMEHA0sz3wJLg9v1ofF--IRNyo5WeY2R41ppQ1AfniRlvq5Iwkj1W10LJZOUJpHsU8B16PpU1VQJV1gI7WwPIaqOZaqpny8xnL6OVRbF0aGfJS0gOnflR6eCRLR25w";
 
-const START_DATE_DEFAULT = "2025-06-01";
+const START_DATE_DEFAULT = "2025-10-01";
 const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
 const THROTTLE_MS = 300;
@@ -159,14 +159,6 @@ function saveCache() {
   fs.writeFileSync(META_FILE, JSON.stringify({ last_update: IN_MEMORY.last_update }, null, 2));
 }
 
-function loadCache() {
-  try {
-    IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-    const meta = JSON.parse(fs.readFileSync(META_FILE, "utf8"));
-    IN_MEMORY.last_update = meta?.last_update || null;
-  } catch {}
-}
-
 async function buildAndCache() {
   const [leads, usersMap] = await Promise.all([
     fetchLeadsFechados(),
@@ -181,22 +173,10 @@ async function buildAndCache() {
   saveCache();
 }
 
-// =================== ROUTES ===================
-
-// 🔹 LEITURA (Power BI – rápida)
-router.get("/", (req, res) => {
-  loadCache();
-  res.json(IN_MEMORY.rows);
-});
-
-// 🔹 REFRESH MANUAL / AUTOMÁTICO (pesado)
-router.post("/refresh", async (req, res) => {
+// =================== ROUTE ===================
+router.get("/", async (req, res) => {
   await buildAndCache();
-  res.json({
-    ok: true,
-    updated_at: IN_MEMORY.last_update,
-    rows: IN_MEMORY.rows.length,
-  });
+  res.json(IN_MEMORY.rows);
 });
 
 export default router;
