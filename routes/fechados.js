@@ -1,7 +1,5 @@
 import { Router } from "express";
 import axios from "axios";
-import cors from "cors";
-import compression from "compression";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
@@ -44,12 +42,11 @@ async function safeGet(url, params = {}) {
       });
       return res.data || {};
     } catch (err) {
-      const status = err.response?.status;
-      if (status === 429) {
+      if (err.response?.status === 429) {
         await wait(2000);
         continue;
       }
-      console.error("❌ HTTP:", status, err.message);
+      console.error("❌ HTTP:", err.message);
       return {};
     }
   }
@@ -83,8 +80,7 @@ function pickMainContact(lead, contactsMap) {
 // =================== USERS ===================
 async function fetchUsersMap() {
   const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
-  const users = data?._embedded?.users ?? [];
-  return new Map(users.map((u) => [u.id, u.name]));
+  return new Map((data?._embedded?.users ?? []).map((u) => [u.id, u.name]));
 }
 
 // =================== LEADS FECHADOS ===================
@@ -105,6 +101,7 @@ async function fetchLeadsFechados() {
 
     const rows = data?._embedded?.leads ?? [];
     if (!rows.length) break;
+
     all.push(...rows);
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
@@ -123,6 +120,7 @@ async function fetchContactsByIds(idList) {
     const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
     const params = {};
     chunk.forEach((id, idx) => (params[`id[${idx}]`] = id));
+
     const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
     for (const c of data?._embedded?.contacts ?? []) out.set(c.id, c);
   }
@@ -170,13 +168,36 @@ async function buildAndCache() {
 
   IN_MEMORY.rows = leads.map((l) => flattenLead(l, contactsMap, usersMap));
   IN_MEMORY.last_update = dayjs().format("YYYY-MM-DD HH:mm:ss");
+
   saveCache();
 }
 
-// =================== ROUTE ===================
+// =================== ROUTES ===================
+
+// 👉 Power BI (rápido, sem Kommo)
 router.get("/", async (req, res) => {
-  await buildAndCache();
+  if (!IN_MEMORY.rows.length) {
+    try {
+      IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+    } catch {
+      return res.status(202).json({ message: "Cache ainda não gerado" });
+    }
+  }
   res.json(IN_MEMORY.rows);
+});
+
+// 👉 Rebuild manual (pesado)
+router.post("/refresh", async (req, res) => {
+  try {
+    await buildAndCache();
+    res.json({
+      ok: true,
+      rows: IN_MEMORY.rows.length,
+      last_update: IN_MEMORY.last_update,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 export default router;
