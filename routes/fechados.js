@@ -42,11 +42,12 @@ async function safeGet(url, params = {}) {
       });
       return res.data || {};
     } catch (err) {
-      if (err.response?.status === 429) {
+      const status = err.response?.status;
+      if (status === 429) {
         await wait(2000);
         continue;
       }
-      console.error("❌ HTTP:", err.message);
+      console.error("❌ HTTP:", status, err.message);
       return {};
     }
   }
@@ -80,7 +81,8 @@ function pickMainContact(lead, contactsMap) {
 // =================== USERS ===================
 async function fetchUsersMap() {
   const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
-  return new Map((data?._embedded?.users ?? []).map((u) => [u.id, u.name]));
+  const users = data?._embedded?.users ?? [];
+  return new Map(users.map((u) => [u.id, u.name]));
 }
 
 // =================== LEADS FECHADOS ===================
@@ -101,7 +103,6 @@ async function fetchLeadsFechados() {
 
     const rows = data?._embedded?.leads ?? [];
     if (!rows.length) break;
-
     all.push(...rows);
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
@@ -120,7 +121,6 @@ async function fetchContactsByIds(idList) {
     const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
     const params = {};
     chunk.forEach((id, idx) => (params[`id[${idx}]`] = id));
-
     const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
     for (const c of data?._embedded?.contacts ?? []) out.set(c.id, c);
   }
@@ -157,6 +157,14 @@ function saveCache() {
   fs.writeFileSync(META_FILE, JSON.stringify({ last_update: IN_MEMORY.last_update }, null, 2));
 }
 
+function loadCache() {
+  try {
+    IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+  } catch {
+    IN_MEMORY.rows = [];
+  }
+}
+
 async function buildAndCache() {
   const [leads, usersMap] = await Promise.all([
     fetchLeadsFechados(),
@@ -168,36 +176,25 @@ async function buildAndCache() {
 
   IN_MEMORY.rows = leads.map((l) => flattenLead(l, contactsMap, usersMap));
   IN_MEMORY.last_update = dayjs().format("YYYY-MM-DD HH:mm:ss");
-
   saveCache();
 }
 
-// =================== ROUTES ===================
-
-// 👉 Power BI (rápido, sem Kommo)
+// =================== ROUTE ===================
 router.get("/", async (req, res) => {
-  if (!IN_MEMORY.rows.length) {
-    try {
-      IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-    } catch {
-      return res.status(202).json({ message: "Cache ainda não gerado" });
-    }
-  }
-  res.json(IN_MEMORY.rows);
-});
+  loadCache();
 
-// 👉 Rebuild manual (pesado)
-router.post("/refresh", async (req, res) => {
-  try {
-    await buildAndCache();
-    res.json({
-      ok: true,
-      rows: IN_MEMORY.rows.length,
-      last_update: IN_MEMORY.last_update,
-    });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  // ⭐ TIMEOUT FIX: responde IMEDIATO se já tiver cache
+  if (IN_MEMORY.rows.length) {
+    res.json(IN_MEMORY.rows);
+
+    // atualiza em background (não bloqueia resposta)
+    buildAndCache().catch(() => {});
+    return;
   }
+
+  // primeira execução
+  await buildAndCache();
+  res.json(IN_MEMORY.rows);
 });
 
 export default router;
