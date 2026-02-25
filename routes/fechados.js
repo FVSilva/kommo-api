@@ -11,11 +11,14 @@ const router = Router();
 
 // =================== CONFIG ===================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nzg0ODVjZmIwMmMxMDRmNzkwOTg4YmIxYmVlMDNmNjkzNzIyNGJlMGFiZTI3NGVjMzZiNDhlYjIwODVkYjY3ODA3NWM1MTg5In0.eyJhdWQiOiJlMDhkMWRkNy04MTE0LTQ1MGUtYmRlNS01NTRmNGEzZjU3N2EiLCJqdGkiOiIxNDRkN2I2Nzc4NDg1Y2ZiMDJjMTA0Zjc5MDk4OGJiMWJlZTAzZjY5MzcyMjRiZTBhYmUyNzRlYzM2YjQ4ZWIyMDg1ZGI2NzgwNzVjNTE4OSIsImlhdCI6MTc2MzA3Nzc0NiwibmJmIjoxNzYzMDc3NzQ2LCJleHAiOjE4NTkxNTUyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6["crm","files","files_delete","notifications","push_notifications"],"hash_uuid":"823c5de4-27b1-4203-983f-6027d88e46da","user_flags":0,"api_domain":"api-g.kommo.com"}.mVylUY-n2xSzn5vt8ldTMPY03K0IQBvRUsmgvXdSZasLJFZo8lbkaKbEzpKUSrYoDztZ8tzTD4vxILOUzb05S0teG0RYnOIzwb7Y_kpVzn_oV8-BeGpRDWPnHzBkY0MLTKGZMD-ll5PnhtLrj3TF-6umDGkzq_uJvPUauEIOu3rET-AGrWVz0UsURvlvaQ5h53v0Hc2-Daoya4iz6_JXNnNQyMEHA0sz3wJLg9v1ofF--IRNyo5WeY2R41ppQ1AfniRlvq5Iwkj1W10LJZOUJpHsU8B16PpU1VQJV1gI7WwPIaqOZaqpny8xnL6OVRbF0aGfJS0gOnflR6eCRLR25w";
+
+const TOKEN = `Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nzg0ODVjZmIwMmMxMDRmNzkwOTg4YmIxYmVlMDNmNjkzNzIyNGJlMGFiZTI3NGVjMzZiNDhlYjIwODVkYjY3ODA3NWM1MTg5In0.eyJhdWQiOiJlMDhkMWRkNy04MTE0LTQ1MGUtYmRlNS01NTRmNGEzZjU3N2EiLCJqdGkiOiIxNDRkN2I2Nzc4NDg1Y2ZiMDJjMTA0Zjc5MDk4OGJiMWJlZTAzZjY5MzcyMjRiZTBhYmUyNzRlYzM2YjQ4ZWIyMDg1ZGI2NzgwNzVjNTE4OSIsImlhdCI6MTc2MzA3Nzc0NiwibmJmIjoxNzYzMDc3NzQ2LCJleHAiOjE4NTkxNTUyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJjcm0iLCJmaWxlcyIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiLCJwdXNoX25vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiODIzYzVkZTQtMjdiMS00MjAzLTk4M2YtNjAyN2Q4OGU0NmRhIiwidXNlcl9mbGFncyI6MCwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.mVylUY-n2xSzn5vt8ldTMPY03K0IQBvRUsmgvXdSZasLJFZo8lbkaKbEzpKUSrYoDztZ8tzTD4vxILOUzb05S0teG0RYnOIzwb7Y_kpVzn_oV8-BeGpRDWPnHzBkY0MLTKGZMD-ll5PnhtLrj3TF-6umDGkzq_uJvPUauEIOu3rET-AGrWVz0UsURvlvaQ5h53v0Hc2-Daoya4iz6_JXNnNQyMEHA0sz3wJLg9v1ofF--IRNyo5WeY2R41ppQ1AfniRlvq5Iwkj1W10LJZOUJpHsU8B16PpU1VQJV1gI7WwPIaqOZaqpny8xnL6OVRbF0aGfJS0gOnflR6eCRLR25w`;
 
 const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
-const THROTTLE_MS = 200;
+const CONTACTS_CHUNK = 40;
+const THROTTLE_MS = 300;
+
 const CACHE_FILE = "./cache_fechados.json";
 
 // =================== TIMEZONE ===================
@@ -25,28 +28,51 @@ dayjs.tz.setDefault("America/Sao_Paulo");
 
 // =================== INFRA ===================
 axiosRetry(axios, { retries: 5, retryDelay: axiosRetry.exponentialDelay });
-const httpAgent = new https.Agent({ keepAlive: true, maxSockets: 60 });
+
+const httpAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 60,
+});
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-let IN_MEMORY = [];
-let BUILDING = false;
-
-// =================== SAFE GET ===================
 async function safeGet(url, params = {}) {
-  try {
-    await wait(THROTTLE_MS);
-    const res = await axios.get(url, {
-      headers: { Authorization: TOKEN, Accept: "application/json" },
-      params,
-      timeout: 120000,
-      httpAgent,
-    });
-    return res.data || {};
-  } catch (err) {
-    console.error("HTTP ERROR:", err.response?.status, err.message);
-    return {};
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    try {
+      await wait(THROTTLE_MS);
+
+      const res = await axios.get(url, {
+        headers: {
+          Authorization: TOKEN,
+          Accept: "application/json",
+        },
+        params,
+        timeout: 90000,
+        httpAgent,
+      });
+
+      return res.data || {};
+    } catch (err) {
+      const status = err.response?.status;
+
+      if (status === 429) {
+        await wait(2000);
+        continue;
+      }
+
+      console.error("Erro HTTP:", status, err.message);
+      return {};
+    }
   }
+
+  return {};
 }
+
+// =================== STATUS ===================
+const FIXED_STATUS_MAP = {
+  142: "Lead - Convertido",
+  143: "Lead - Perdido",
+};
 
 // =================== USERS ===================
 async function fetchUsersMap() {
@@ -68,20 +94,85 @@ async function fetchLeadsFechados() {
       limit: LIMIT_PER_PAGE,
       page,
       filter: { closed_at: { from: startUnix, to: endUnix } },
+      with: "contacts",
     });
 
     const rows = data?._embedded?.leads ?? [];
+
     if (!rows.length) break;
 
     all.push(...rows);
+
     if (rows.length < LIMIT_PER_PAGE) break;
+
     page++;
   }
 
-  return all.filter((l) => l.status_id === 142 || l.status_id === 143);
+  return all.filter(
+    (l) => l.status_id === 142 || l.status_id === 143
+  );
+}
+
+// =================== CONTACTS ===================
+async function fetchContactsByIds(idList) {
+  if (!idList.length) return new Map();
+
+  const uniq = [...new Set(idList)];
+  const out = new Map();
+
+  for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
+    const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
+    const params = {};
+
+    chunk.forEach((id, idx) => {
+      params[`id[${idx}]`] = id;
+    });
+
+    const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
+
+    for (const c of data?._embedded?.contacts ?? []) {
+      out.set(c.id, c);
+    }
+  }
+
+  return out;
+}
+
+// =================== HELPERS ===================
+function pickMainContact(lead, contactsMap) {
+  const rel = lead?._embedded?.contacts ?? [];
+  if (!rel.length) return null;
+  const main = rel.find((c) => c.is_main) || rel[0];
+  return contactsMap.get(main.id) || null;
+}
+
+// =================== FLATTEN ===================
+function flattenLead(lead, contactsMap, usersMap) {
+  const contact = pickMainContact(lead, contactsMap);
+
+  return {
+    id: lead.id,
+    name: lead.name,
+    price: lead.price || 0,
+    status_id: lead.status_id,
+    status_name: FIXED_STATUS_MAP[lead.status_id] || "Outro",
+    responsible_user_id: lead.responsible_user_id || null,
+    responsible_user_name:
+      usersMap.get(lead.responsible_user_id) || "Sem responsável",
+    created_at: lead.created_at
+      ? dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss")
+      : null,
+    closed_at: lead.closed_at
+      ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss")
+      : null,
+    contact_id: contact?.id || null,
+    contact_name: contact?.name || null,
+  };
 }
 
 // =================== CACHE ===================
+let IN_MEMORY = [];
+
 function saveCache() {
   fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY));
 }
@@ -94,59 +185,38 @@ function loadCache() {
   }
 }
 
-// =================== BUILD ===================
 async function buildAndCache() {
-  if (BUILDING) return;
-  BUILDING = true;
+  const [leads, usersMap] = await Promise.all([
+    fetchLeadsFechados(),
+    fetchUsersMap(),
+  ]);
 
-  try {
-    console.log("Atualizando cache...");
+  const contactIds = leads.flatMap(
+    (l) => l._embedded?.contacts?.map((c) => c.id) ?? []
+  );
 
-    const leads = await fetchLeadsFechados();
-    const usersMap = await fetchUsersMap();
+  const contactsMap = await fetchContactsByIds(contactIds);
 
-    IN_MEMORY = leads.map((l) => ({
-      id: l.id,
-      name: l.name,
-      price: l.price || 0,
-      status_id: l.status_id,
-      status_name: l.status_id === 142 ? "Lead - Convertido" : "Lead - Perdido",
-      responsible_user_id: l.responsible_user_id || null,
-      responsible_user_name:
-        usersMap.get(l.responsible_user_id) || "Sem responsável",
-      created_at: l.created_at
-        ? dayjs.unix(l.created_at).format("YYYY-MM-DD HH:mm:ss")
-        : null,
-      updated_at: l.updated_at
-        ? dayjs.unix(l.updated_at).format("YYYY-MM-DD HH:mm:ss")
-        : null,
-      closed_at: l.closed_at
-        ? dayjs.unix(l.closed_at).format("YYYY-MM-DD HH:mm:ss")
-        : null,
-    }));
+  IN_MEMORY = leads.map((l) =>
+    flattenLead(l, contactsMap, usersMap)
+  );
 
-    saveCache();
-    console.log("Cache atualizado:", IN_MEMORY.length);
-  } catch (err) {
-    console.error("Erro build:", err.message);
-  }
-
-  BUILDING = false;
-}
-
-// =================== INIT ===================
-loadCache();
-if (!IN_MEMORY.length) {
-  buildAndCache();
+  saveCache();
 }
 
 // =================== ROUTE ===================
 router.get("/", async (req, res) => {
+  loadCache();
+
   if (IN_MEMORY.length) {
-    return res.json(IN_MEMORY); // 🔥 SEMPRE LISTA
+    res.json(IN_MEMORY);
+    buildAndCache().catch(() => {});
+    return;
   }
 
-  return res.json([]); // 🔥 NUNCA retorna objeto
+  await buildAndCache();
+  res.json(IN_MEMORY);
 });
 
 export default router;
+
