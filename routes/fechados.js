@@ -11,7 +11,6 @@ const router = Router();
 
 // =================== CONFIG ===================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-
 const TOKEN = `Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nzg0ODVjZmIwMmMxMDRmNzkwOTg4YmIxYmVlMDNmNjkzNzIyNGJlMGFiZTI3NGVjMzZiNDhlYjIwODVkYjY3ODA3NWM1MTg5In0.eyJhdWQiOiJlMDhkMWRkNy04MTE0LTQ1MGUtYmRlNS01NTRmNGEzZjU3N2EiLCJqdGkiOiIxNDRkN2I2Nzc4NDg1Y2ZiMDJjMTA0Zjc5MDk4OGJiMWJlZTAzZjY5MzcyMjRiZTBhYmUyNzRlYzM2YjQ4ZWIyMDg1ZGI2NzgwNzVjNTE4OSIsImlhdCI6MTc2MzA3Nzc0NiwibmJmIjoxNzYzMDc3NzQ2LCJleHAiOjE4NTkxNTUyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJjcm0iLCJmaWxlcyIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiLCJwdXNoX25vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiODIzYzVkZTQtMjdiMS00MjAzLTk4M2YtNjAyN2Q4OGU0NmRhIiwidXNlcl9mbGFncyI6MCwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.mVylUY-n2xSzn5vt8ldTMPY03K0IQBvRUsmgvXdSZasLJFZo8lbkaKbEzpKUSrYoDztZ8tzTD4vxILOUzb05S0teG0RYnOIzwb7Y_kpVzn_oV8-BeGpRDWPnHzBkY0MLTKGZMD-ll5PnhtLrj3TF-6umDGkzq_uJvPUauEIOu3rET-AGrWVz0UsURvlvaQ5h53v0Hc2-Daoya4iz6_JXNnNQyMEHA0sz3wJLg9v1ofF--IRNyo5WeY2R41ppQ1AfniRlvq5Iwkj1W10LJZOUJpHsU8B16PpU1VQJV1gI7WwPIaqOZaqpny8xnL6OVRbF0aGfJS0gOnflR6eCRLR25w`;
 
 const START_DATE_DEFAULT = "2025-11-01";
@@ -20,6 +19,7 @@ const CONTACTS_CHUNK = 40;
 const THROTTLE_MS = 300;
 
 const CACHE_FILE = "./cache_fechados.json";
+const META_FILE = "./cache_meta_fechados.json";
 
 // =================== TIMEZONE ===================
 dayjs.extend(utc);
@@ -37,7 +37,7 @@ const httpAgent = new https.Agent({
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function safeGet(url, params = {}) {
-  for (let attempt = 1; attempt <= 5; attempt++) {
+  for (let attempt = 1; attempt <= 8; attempt++) {
     try {
       await wait(THROTTLE_MS);
 
@@ -47,7 +47,7 @@ async function safeGet(url, params = {}) {
           Accept: "application/json",
         },
         params,
-        timeout: 90000,
+        timeout: 120000,
         httpAgent,
       });
 
@@ -60,7 +60,7 @@ async function safeGet(url, params = {}) {
         continue;
       }
 
-      console.error("Erro HTTP:", status, err.message);
+      console.error("❌ HTTP:", status, err.message);
       return {};
     }
   }
@@ -68,49 +68,40 @@ async function safeGet(url, params = {}) {
   return {};
 }
 
-// =================== STATUS ===================
+// =================== STATUS MAP ===================
 const FIXED_STATUS_MAP = {
   142: "Lead - Convertido",
   143: "Lead - Perdido",
 };
+
+// =================== HELPERS ===================
+function normalizeCF(arr, prefix = "") {
+  const out = {};
+  (arr || []).forEach((f) => {
+    const key = prefix + (f.field_name || `field_${f.field_id}`);
+    const val = (f.values || [])
+      .map((v) => v.value)
+      .filter(Boolean)
+      .join(", ");
+
+    out[key] = val || null;
+  });
+  return out;
+}
+
+function pickMainContact(lead, contactsMap) {
+  const rel = lead?._embedded?.contacts ?? [];
+  if (!rel.length) return null;
+
+  const main = rel.find((c) => c.is_main) || rel[0];
+  return contactsMap.get(main.id) || null;
+}
 
 // =================== USERS ===================
 async function fetchUsersMap() {
   const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
   const users = data?._embedded?.users ?? [];
   return new Map(users.map((u) => [u.id, u.name]));
-}
-
-// =================== LEADS ===================
-async function fetchLeadsFechados() {
-  const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
-  const endUnix = dayjs().endOf("day").unix();
-
-  let page = 1;
-  const all = [];
-
-  while (true) {
-    const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
-      limit: LIMIT_PER_PAGE,
-      page,
-      filter: { closed_at: { from: startUnix, to: endUnix } },
-      with: "contacts",
-    });
-
-    const rows = data?._embedded?.leads ?? [];
-
-    if (!rows.length) break;
-
-    all.push(...rows);
-
-    if (rows.length < LIMIT_PER_PAGE) break;
-
-    page++;
-  }
-
-  return all.filter(
-    (l) => l.status_id === 142 || l.status_id === 143
-  );
 }
 
 // =================== CONTACTS ===================
@@ -138,17 +129,12 @@ async function fetchContactsByIds(idList) {
   return out;
 }
 
-// =================== HELPERS ===================
-function pickMainContact(lead, contactsMap) {
-  const rel = lead?._embedded?.contacts ?? [];
-  if (!rel.length) return null;
-  const main = rel.find((c) => c.is_main) || rel[0];
-  return contactsMap.get(main.id) || null;
-}
-
 // =================== FLATTEN ===================
 function flattenLead(lead, contactsMap, usersMap) {
   const contact = pickMainContact(lead, contactsMap);
+  const contactCF = contact
+    ? normalizeCF(contact.custom_fields_values, "contact_")
+    : {};
 
   return {
     id: lead.id,
@@ -162,45 +148,84 @@ function flattenLead(lead, contactsMap, usersMap) {
     created_at: lead.created_at
       ? dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss")
       : null,
+    updated_at: lead.updated_at
+      ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss")
+      : null,
     closed_at: lead.closed_at
       ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss")
       : null,
     contact_id: contact?.id || null,
     contact_name: contact?.name || null,
+    ...contactCF,
   };
 }
 
 // =================== CACHE ===================
-let IN_MEMORY = [];
+let IN_MEMORY = {
+  rows: [],
+  last_update: null,
+};
 
 function saveCache() {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY));
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY.rows));
+  fs.writeFileSync(
+    META_FILE,
+    JSON.stringify({ last_update: IN_MEMORY.last_update })
+  );
 }
 
 function loadCache() {
   try {
-    IN_MEMORY = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+    IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
   } catch {
-    IN_MEMORY = [];
+    IN_MEMORY.rows = [];
   }
 }
 
+// =================== BUILD OTIMIZADO ===================
 async function buildAndCache() {
-  const [leads, usersMap] = await Promise.all([
-    fetchLeadsFechados(),
-    fetchUsersMap(),
-  ]);
+  const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
+  const endUnix = dayjs().endOf("day").unix();
 
-  const contactIds = leads.flatMap(
-    (l) => l._embedded?.contacts?.map((c) => c.id) ?? []
-  );
+  const usersMap = await fetchUsersMap();
 
-  const contactsMap = await fetchContactsByIds(contactIds);
+  let page = 1;
+  const finalRows = [];
 
-  IN_MEMORY = leads.map((l) =>
-    flattenLead(l, contactsMap, usersMap)
-  );
+  while (true) {
+    const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
+      limit: LIMIT_PER_PAGE,
+      page,
+      filter: { closed_at: { from: startUnix, to: endUnix } },
+      with: "contacts",
+    });
 
+    const leads = data?._embedded?.leads ?? [];
+    if (!leads.length) break;
+
+    const filtered = leads.filter(
+      (l) => l.status_id === 142 || l.status_id === 143
+    );
+
+    const contactIds = filtered.flatMap(
+      (l) => l._embedded?.contacts?.map((c) => c.id) ?? []
+    );
+
+    const contactsMap = await fetchContactsByIds(contactIds);
+
+    for (const lead of filtered) {
+      finalRows.push(flattenLead(lead, contactsMap, usersMap));
+    }
+
+    console.log(`Página ${page} processada. Total acumulado: ${finalRows.length}`);
+
+    if (leads.length < LIMIT_PER_PAGE) break;
+
+    page++;
+  }
+
+  IN_MEMORY.rows = finalRows;
+  IN_MEMORY.last_update = dayjs().format("YYYY-MM-DD HH:mm:ss");
   saveCache();
 }
 
@@ -208,15 +233,18 @@ async function buildAndCache() {
 router.get("/", async (req, res) => {
   loadCache();
 
-  if (IN_MEMORY.length) {
-    res.json(IN_MEMORY);
-    buildAndCache().catch(() => {});
+  if (IN_MEMORY.rows.length) {
+    res.json(IN_MEMORY.rows);
+
+    buildAndCache().catch((err) =>
+      console.error("Erro atualização background:", err)
+    );
+
     return;
   }
 
   await buildAndCache();
-  res.json(IN_MEMORY);
+  res.json(IN_MEMORY.rows);
 });
 
 export default router;
-
