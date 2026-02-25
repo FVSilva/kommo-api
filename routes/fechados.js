@@ -1,249 +1,140 @@
-import { Router } from "express";
+import express from "express";
 import axios from "axios";
-import dayjs from "dayjs";
-import utc from "dayjs/plugin/utc.js";
-import timezone from "dayjs/plugin/timezone.js";
-import https from "https";
-import axiosRetry from "axios-retry";
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
-const router = Router();
+const router = express.Router();
 
 // =================== CONFIG ===================
-const DOMAIN = "https://suporteexodosaudecom.kommo.com";
 const TOKEN = `Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nzg0ODVjZmIwMmMxMDRmNzkwOTg4YmIxYmVlMDNmNjkzNzIyNGJlMGFiZTI3NGVjMzZiNDhlYjIwODVkYjY3ODA3NWM1MTg5In0.eyJhdWQiOiJlMDhkMWRkNy04MTE0LTQ1MGUtYmRlNS01NTRmNGEzZjU3N2EiLCJqdGkiOiIxNDRkN2I2Nzc4NDg1Y2ZiMDJjMTA0Zjc5MDk4OGJiMWJlZTAzZjY5MzcyMjRiZTBhYmUyNzRlYzM2YjQ4ZWIyMDg1ZGI2NzgwNzVjNTE4OSIsImlhdCI6MTc2MzA3Nzc0NiwibmJmIjoxNzYzMDc3NzQ2LCJleHAiOjE4NTkxNTUyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJjcm0iLCJmaWxlcyIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiLCJwdXNoX25vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiODIzYzVkZTQtMjdiMS00MjAzLTk4M2YtNjAyN2Q4OGU0NmRhIiwidXNlcl9mbGFncyI6MCwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.mVylUY-n2xSzn5vt8ldTMPY03K0IQBvRUsmgvXdSZasLJFZo8lbkaKbEzpKUSrYoDztZ8tzTD4vxILOUzb05S0teG0RYnOIzwb7Y_kpVzn_oV8-BeGpRDWPnHzBkY0MLTKGZMD-ll5PnhtLrj3TF-6umDGkzq_uJvPUauEIOu3rET-AGrWVz0UsURvlvaQ5h53v0Hc2-Daoya4iz6_JXNnNQyMEHA0sz3wJLg9v1ofF--IRNyo5WeY2R41ppQ1AfniRlvq5Iwkj1W10LJZOUJpHsU8B16PpU1VQJV1gI7WwPIaqOZaqpny8xnL6OVRbF0aGfJS0gOnflR6eCRLR25w`;
+const SUBDOMAIN = "https://suporteexodosaudecom.kommo.com"; // ex: v4company
+const BASE_URL = `https://${SUBDOMAIN}.kommo.com/api/v4/leads`;
 
-const START_DATE_DEFAULT = "2025-11-01";
-const LIMIT_PER_PAGE = 250;
-const CONTACTS_CHUNK = 40;
-const THROTTLE_MS = 300;
+const PAGE_LIMIT = 250;
+const MAX_PAGES = 30; // 🔥 PROTEÇÃO (30 x 250 = 7500 registros máx)
+const CACHE_FILE = "fechados-cache.json";
 
-const CACHE_FILE = "./cache_fechados.json";
-const META_FILE = "./cache_meta_fechados.json";
+// =================== PATH ===================
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const cachePath = path.join(__dirname, CACHE_FILE);
 
-// =================== TIMEZONE ===================
-dayjs.extend(utc);
-dayjs.extend(timezone);
-dayjs.tz.setDefault("America/Sao_Paulo");
-
-// =================== INFRA ===================
-axiosRetry(axios, { retries: 5, retryDelay: axiosRetry.exponentialDelay });
-
-const httpAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 60,
-});
-
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-
-async function safeGet(url, params = {}) {
-  for (let attempt = 1; attempt <= 8; attempt++) {
-    try {
-      await wait(THROTTLE_MS);
-
-      const res = await axios.get(url, {
-        headers: {
-          Authorization: TOKEN,
-          Accept: "application/json",
-        },
-        params,
-        timeout: 120000,
-        httpAgent,
-      });
-
-      return res.data || {};
-    } catch (err) {
-      const status = err.response?.status;
-
-      if (status === 429) {
-        await wait(2000);
-        continue;
-      }
-
-      console.error("❌ HTTP:", status, err.message);
-      return {};
-    }
-  }
-
-  return {};
-}
-
-// =================== STATUS MAP ===================
-const FIXED_STATUS_MAP = {
-  142: "Lead - Convertido",
-  143: "Lead - Perdido",
-};
-
-// =================== HELPERS ===================
-function normalizeCF(arr, prefix = "") {
-  const out = {};
-  (arr || []).forEach((f) => {
-    const key = prefix + (f.field_name || `field_${f.field_id}`);
-    const val = (f.values || [])
-      .map((v) => v.value)
-      .filter(Boolean)
-      .join(", ");
-
-    out[key] = val || null;
-  });
-  return out;
-}
-
-function pickMainContact(lead, contactsMap) {
-  const rel = lead?._embedded?.contacts ?? [];
-  if (!rel.length) return null;
-
-  const main = rel.find((c) => c.is_main) || rel[0];
-  return contactsMap.get(main.id) || null;
-}
-
-// =================== USERS ===================
-async function fetchUsersMap() {
-  const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
-  const users = data?._embedded?.users ?? [];
-  return new Map(users.map((u) => [u.id, u.name]));
-}
-
-// =================== CONTACTS ===================
-async function fetchContactsByIds(idList) {
-  if (!idList.length) return new Map();
-
-  const uniq = [...new Set(idList)];
-  const out = new Map();
-
-  for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
-    const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
-    const params = {};
-
-    chunk.forEach((id, idx) => {
-      params[`id[${idx}]`] = id;
-    });
-
-    const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
-
-    for (const c of data?._embedded?.contacts ?? []) {
-      out.set(c.id, c);
-    }
-  }
-
-  return out;
-}
-
-// =================== FLATTEN ===================
-function flattenLead(lead, contactsMap, usersMap) {
-  const contact = pickMainContact(lead, contactsMap);
-  const contactCF = contact
-    ? normalizeCF(contact.custom_fields_values, "contact_")
-    : {};
-
-  return {
-    id: lead.id,
-    name: lead.name,
-    price: lead.price || 0,
-    status_id: lead.status_id,
-    status_name: FIXED_STATUS_MAP[lead.status_id] || "Outro",
-    responsible_user_id: lead.responsible_user_id || null,
-    responsible_user_name:
-      usersMap.get(lead.responsible_user_id) || "Sem responsável",
-    created_at: lead.created_at
-      ? dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss")
-      : null,
-    updated_at: lead.updated_at
-      ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss")
-      : null,
-    closed_at: lead.closed_at
-      ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss")
-      : null,
-    contact_id: contact?.id || null,
-    contact_name: contact?.name || null,
-    ...contactCF,
-  };
-}
-
-// =================== CACHE ===================
+// =================== MEMÓRIA ===================
 let IN_MEMORY = {
   rows: [],
-  last_update: null,
+  lastBuild: null
 };
 
-function saveCache() {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY.rows));
-  fs.writeFileSync(
-    META_FILE,
-    JSON.stringify({ last_update: IN_MEMORY.last_update })
-  );
-}
+let isBuilding = false;
 
+// =================== LOAD CACHE ===================
 function loadCache() {
   try {
-    IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-  } catch {
-    IN_MEMORY.rows = [];
+    if (fs.existsSync(cachePath)) {
+      const data = fs.readFileSync(cachePath, "utf8");
+      IN_MEMORY = JSON.parse(data);
+      console.log("✅ Cache carregado do disco");
+    }
+  } catch (err) {
+    console.log("Erro ao carregar cache:", err.message);
   }
 }
 
-// =================== BUILD OTIMIZADO ===================
-async function buildAndCache() {
-  const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
-  const endUnix = dayjs().endOf("day").unix();
+// =================== SAVE CACHE ===================
+function saveCache() {
+  try {
+    fs.writeFileSync(cachePath, JSON.stringify(IN_MEMORY));
+  } catch (err) {
+    console.log("Erro ao salvar cache:", err.message);
+  }
+}
 
-  const usersMap = await fetchUsersMap();
+// =================== FETCH KOMMO ===================
+async function fetchPage(page) {
+  const response = await axios.get(BASE_URL, {
+    headers: {
+      Authorization: `Bearer ${TOKEN}`
+    },
+    params: {
+      limit: PAGE_LIMIT,
+      page,
+      filter: {
+        statuses: [142] // ID DO STATUS FECHADO
+      }
+    },
+    timeout: 60000
+  });
+
+  return response.data._embedded?.leads || [];
+}
+
+// =================== BUILD ===================
+async function buildAndCache() {
+  console.log("🚀 Iniciando build...");
 
   let page = 1;
-  const finalRows = [];
+  let total = 0;
+  let allRows = [];
 
-  while (true) {
-    const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
-      limit: LIMIT_PER_PAGE,
-      page,
-      filter: { closed_at: { from: startUnix, to: endUnix } },
-      with: "contacts",
-    });
+  while (page <= MAX_PAGES) {
+    const leads = await fetchPage(page);
 
-    const leads = data?._embedded?.leads ?? [];
     if (!leads.length) break;
 
-    const filtered = leads.filter(
-      (l) => l.status_id === 142 || l.status_id === 143
-    );
+    allRows.push(...leads);
+    total += leads.length;
 
-    const contactIds = filtered.flatMap(
-      (l) => l._embedded?.contacts?.map((c) => c.id) ?? []
-    );
+    console.log(`Página ${page} processada. Total acumulado: ${total}`);
 
-    const contactsMap = await fetchContactsByIds(contactIds);
-
-    for (const lead of filtered) {
-      finalRows.push(flattenLead(lead, contactsMap, usersMap));
-    }
-
-    console.log(`Página ${page} processada. Total acumulado: ${finalRows.length}`);
-
-    if (leads.length < LIMIT_PER_PAGE) break;
+    if (leads.length < PAGE_LIMIT) break;
 
     page++;
   }
 
-  IN_MEMORY.rows = finalRows;
-  IN_MEMORY.last_update = dayjs().format("YYYY-MM-DD HH:mm:ss");
+  IN_MEMORY = {
+    rows: allRows,
+    lastBuild: new Date().toISOString()
+  };
+
   saveCache();
+
+  console.log(`✅ Build finalizado com ${total} registros`);
+}
+
+// =================== SAFE BUILD ===================
+async function buildAndCacheSafe() {
+  if (isBuilding) {
+    console.log("⚠️ Build já em execução, ignorando...");
+    return;
+  }
+
+  try {
+    isBuilding = true;
+    await buildAndCache();
+  } catch (err) {
+    console.log("Erro no build:", err.message);
+  } finally {
+    isBuilding = false;
+  }
 }
 
 // =================== ROUTE ===================
 router.get("/", async (req, res) => {
   loadCache();
 
+  // Se já existe cache, responde rápido
   if (IN_MEMORY.rows.length) {
     res.json(IN_MEMORY.rows);
 
-    buildAndCache().catch((err) =>
-      console.error("Erro atualização background:", err)
-    );
-
+    // Atualiza em background
+    buildAndCacheSafe();
     return;
   }
 
-  await buildAndCache();
+  // Primeira execução
+  await buildAndCacheSafe();
+
   res.json(IN_MEMORY.rows);
 });
 
