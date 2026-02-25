@@ -16,7 +16,7 @@ const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nz
 const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
-const THROTTLE_MS = 300;
+const THROTTLE_MS = 200;
 const CACHE_FILE = "./cache_fechados.json";
 const META_FILE = "./cache_meta_fechados.json";
 
@@ -30,52 +30,24 @@ axiosRetry(axios, { retries: 5, retryDelay: axiosRetry.exponentialDelay });
 const httpAgent = new https.Agent({ keepAlive: true, maxSockets: 60 });
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+let IN_MEMORY = { rows: [], last_update: null };
+let BUILDING = false;
+
+// =================== SAFE GET ===================
 async function safeGet(url, params = {}) {
-  for (let attempt = 1; attempt <= 10; attempt++) {
-    try {
-      await wait(THROTTLE_MS);
-      const res = await axios.get(url, {
-        headers: { Authorization: TOKEN, Accept: "application/json" },
-        params,
-        timeout: 120000,
-        httpAgent,
-      });
-      return res.data || {};
-    } catch (err) {
-      const status = err.response?.status;
-      if (status === 429) {
-        await wait(2000);
-        continue;
-      }
-      console.error("❌ HTTP:", status, err.message);
-      return {};
-    }
+  try {
+    await wait(THROTTLE_MS);
+    const res = await axios.get(url, {
+      headers: { Authorization: TOKEN, Accept: "application/json" },
+      params,
+      timeout: 120000,
+      httpAgent,
+    });
+    return res.data || {};
+  } catch (err) {
+    console.error("❌ HTTP:", err.response?.status, err.message);
+    return {};
   }
-  return {};
-}
-
-// =================== STATUS MAP ===================
-const FIXED_STATUS_MAP = {
-  142: "Lead - Convertido",
-  143: "Lead - Perdido",
-};
-
-// =================== HELPERS ===================
-function normalizeCF(arr, prefix = "") {
-  const out = {};
-  (arr || []).forEach((f) => {
-    const key = prefix + (f.field_name || `field_${f.field_id}`);
-    const val = (f.values || []).map((v) => v.value).filter(Boolean).join(", ");
-    out[key] = val || null;
-  });
-  return out;
-}
-
-function pickMainContact(lead, contactsMap) {
-  const rel = lead?._embedded?.contacts ?? [];
-  if (!rel.length) return null;
-  const main = rel.find((c) => c.is_main) || rel[0];
-  return contactsMap.get(main.id) || null;
 }
 
 // =================== USERS ===================
@@ -85,7 +57,7 @@ async function fetchUsersMap() {
   return new Map(users.map((u) => [u.id, u.name]));
 }
 
-// =================== LEADS FECHADOS ===================
+// =================== LEADS ===================
 async function fetchLeadsFechados() {
   const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
   const endUnix = dayjs().endOf("day").unix();
@@ -103,6 +75,7 @@ async function fetchLeadsFechados() {
 
     const rows = data?._embedded?.leads ?? [];
     if (!rows.length) break;
+
     all.push(...rows);
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
@@ -111,90 +84,75 @@ async function fetchLeadsFechados() {
   return all.filter((l) => l.status_id === 142 || l.status_id === 143);
 }
 
-// =================== CONTACTS ===================
-async function fetchContactsByIds(idList) {
-  if (!idList.length) return new Map();
-  const uniq = [...new Set(idList)];
-  const out = new Map();
-
-  for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
-    const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
-    const params = {};
-    chunk.forEach((id, idx) => (params[`id[${idx}]`] = id));
-    const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
-    for (const c of data?._embedded?.contacts ?? []) out.set(c.id, c);
-  }
-  return out;
-}
-
-// =================== FLATTEN ===================
-function flattenLead(lead, contactsMap, usersMap) {
-  const contact = pickMainContact(lead, contactsMap);
-  const contactCF = contact ? normalizeCF(contact.custom_fields_values, "contact_") : {};
-
-  return {
-    id: lead.id,
-    name: lead.name,
-    price: lead.price || 0,
-    status_id: lead.status_id,
-    status_name: FIXED_STATUS_MAP[lead.status_id] || "Outro",
-    responsible_user_id: lead.responsible_user_id || null,
-    responsible_user_name: usersMap.get(lead.responsible_user_id) || "Sem responsável",
-    created_at: lead.created_at ? dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss") : null,
-    updated_at: lead.updated_at ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss") : null,
-    closed_at: lead.closed_at ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss") : null,
-    contact_id: contact?.id || null,
-    contact_name: contact?.name || null,
-    ...contactCF,
-  };
-}
-
 // =================== CACHE ===================
-let IN_MEMORY = { rows: [], last_update: null };
-
 function saveCache() {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY.rows, null, 2));
-  fs.writeFileSync(META_FILE, JSON.stringify({ last_update: IN_MEMORY.last_update }, null, 2));
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY.rows));
+  fs.writeFileSync(META_FILE, JSON.stringify({ last_update: IN_MEMORY.last_update }));
 }
 
 function loadCache() {
   try {
     IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+    const meta = JSON.parse(fs.readFileSync(META_FILE, "utf8"));
+    IN_MEMORY.last_update = meta.last_update;
   } catch {
     IN_MEMORY.rows = [];
   }
 }
 
+// =================== BUILD ===================
 async function buildAndCache() {
-  const [leads, usersMap] = await Promise.all([
-    fetchLeadsFechados(),
-    fetchUsersMap(),
-  ]);
+  if (BUILDING) return;
+  BUILDING = true;
 
-  const contactIds = leads.flatMap((l) => l._embedded?.contacts?.map((c) => c.id) ?? []);
-  const contactsMap = await fetchContactsByIds(contactIds);
+  try {
+    const leads = await fetchLeadsFechados();
+    const usersMap = await fetchUsersMap();
 
-  IN_MEMORY.rows = leads.map((l) => flattenLead(l, contactsMap, usersMap));
-  IN_MEMORY.last_update = dayjs().format("YYYY-MM-DD HH:mm:ss");
-  saveCache();
+    IN_MEMORY.rows = leads.map((l) => ({
+      id: l.id,
+      name: l.name,
+      price: l.price || 0,
+      status_id: l.status_id,
+      responsible_user_name:
+        usersMap.get(l.responsible_user_id) || "Sem responsável",
+      created_at: l.created_at
+        ? dayjs.unix(l.created_at).format("YYYY-MM-DD HH:mm:ss")
+        : null,
+      closed_at: l.closed_at
+        ? dayjs.unix(l.closed_at).format("YYYY-MM-DD HH:mm:ss")
+        : null,
+    }));
+
+    IN_MEMORY.last_update = dayjs().format("YYYY-MM-DD HH:mm:ss");
+    saveCache();
+    console.log("✅ Cache atualizado");
+  } catch (err) {
+    console.error("❌ Erro build:", err.message);
+  }
+
+  BUILDING = false;
+}
+
+// =================== INIT ===================
+loadCache();
+if (!IN_MEMORY.rows.length) {
+  buildAndCache();
 }
 
 // =================== ROUTE ===================
 router.get("/", async (req, res) => {
-  loadCache();
-
-  // ⭐ TIMEOUT FIX: responde IMEDIATO se já tiver cache
   if (IN_MEMORY.rows.length) {
-    res.json(IN_MEMORY.rows);
-
-    // atualiza em background (não bloqueia resposta)
-    buildAndCache().catch(() => {});
-    return;
+    return res.json({
+      last_update: IN_MEMORY.last_update,
+      total: IN_MEMORY.rows.length,
+      data: IN_MEMORY.rows,
+    });
   }
 
-  // primeira execução
-  await buildAndCache();
-  res.json(IN_MEMORY.rows);
+  return res.status(202).json({
+    message: "Cache ainda sendo gerado...",
+  });
 });
 
 export default router;
