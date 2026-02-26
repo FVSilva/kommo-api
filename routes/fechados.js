@@ -7,7 +7,6 @@ import https from "https";
 import axiosRetry from "axios-retry";
 import fs from "fs";
 const router = Router();
-
 // =================== CONFIG ===================
 
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
