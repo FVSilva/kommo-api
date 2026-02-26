@@ -11,13 +11,17 @@ const router = Router();
 
 // =================== CONFIG ===================
 
-const TOKEN = `Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjE0NGQ3YjY3Nzg0ODVjZmIwMmMxMDRmNzkwOTg4YmIxYmVlMDNmNjkzNzIyNGJlMGFiZTI3NGVjMzZiNDhlYjIwODVkYjY3ODA3NWM1MTg5In0.eyJhdWQiOiJlMDhkMWRkNy04MTE0LTQ1MGUtYmRlNS01NTRmNGEzZjU3N2EiLCJqdGkiOiIxNDRkN2I2Nzc4NDg1Y2ZiMDJjMTA0Zjc5MDk4OGJiMWJlZTAzZjY5MzcyMjRiZTBhYmUyNzRlYzM2YjQ4ZWIyMDg1ZGI2NzgwNzVjNTE4OSIsImlhdCI6MTc2MzA3Nzc0NiwibmJmIjoxNzYzMDc3NzQ2LCJleHAiOjE4NTkxNTUyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJjcm0iLCJmaWxlcyIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiLCJwdXNoX25vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiODIzYzVkZTQtMjdiMS00MjAzLTk4M2YtNjAyN2Q4OGU0NmRhIiwidXNlcl9mbGFncyI6MCwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.mVylUY-n2xSzn5vt8ldTMPY03K0IQBvRUsmgvXdSZasLJFZo8lbkaKbEzpKUSrYoDztZ8tzTD4vxILOUzb05S0teG0RYnOIzwb7Y_kpVzn_oV8-BeGpRDWPnHzBkY0MLTKGZMD-ll5PnhtLrj3TF-6umDGkzq_uJvPUauEIOu3rET-AGrWVz0UsURvlvaQ5h53v0Hc2-Daoya4iz6_JXNnNQyMEHA0sz3wJLg9v1ofF--IRNyo5WeY2R41ppQ1AfniRlvq5Iwkj1W10LJZOUJpHsU8B16PpU1VQJV1gI7WwPIaqOZaqpny8xnL6OVRbF0aGfJS0gOnflR6eCRLR25w`;
-const SUBDOMAIN = "https://suporteexodosaudecom.kommo.com"; // ex: v4company
+const DOMAIN = "https://suporteexodosaudecom.kommo.com";
+const TOKEN = process.env.KOMMO_TOKEN; // ⚠️ NUNCA hardcode token
 const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
-const THROTTLE_MS = 250;
+const THROTTLE_MS = 200;
 const CACHE_FILE = "./cache_fechados.json";
+
+if (!TOKEN) {
+  throw new Error("KOMMO_TOKEN não definido nas variáveis de ambiente.");
+}
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -28,7 +32,7 @@ axiosRetry(axios, { retries: 3, retryDelay: axiosRetry.exponentialDelay });
 
 const httpAgent = new https.Agent({
   keepAlive: true,
-  maxSockets: 30,
+  maxSockets: 20,
 });
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -36,12 +40,17 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 async function safeGet(url, params = {}) {
   try {
     await wait(THROTTLE_MS);
+
     const res = await axios.get(url, {
-      headers: { Authorization: TOKEN, Accept: "application/json" },
+      headers: {
+        Authorization: TOKEN,
+        Accept: "application/json",
+      },
       params,
       timeout: 60000,
       httpAgent,
     });
+
     return res.data || {};
   } catch (err) {
     console.error("Erro HTTP:", err.message);
@@ -49,7 +58,7 @@ async function safeGet(url, params = {}) {
   }
 }
 
-// =================== FETCH LEADS EM BLOCOS ===================
+// =================== FETCH LEADS ===================
 async function fetchLeadsFechadosPorMes(inicio, fim) {
   let page = 1;
   const all = [];
@@ -59,10 +68,7 @@ async function fetchLeadsFechadosPorMes(inicio, fim) {
       limit: LIMIT_PER_PAGE,
       page,
       filter: {
-        closed_at: {
-          from: inicio,
-          to: fim,
-        },
+        closed_at: { from: inicio, to: fim },
       },
       with: "contacts",
     });
@@ -70,13 +76,18 @@ async function fetchLeadsFechadosPorMes(inicio, fim) {
     const rows = data?._embedded?.leads ?? [];
     if (!rows.length) break;
 
-    all.push(...rows);
+    // filtra já aqui pra reduzir memória
+    const fechados = rows.filter(
+      (l) => l.status_id === 142 || l.status_id === 143
+    );
+
+    all.push(...fechados);
 
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
   }
 
-  return all.filter((l) => l.status_id === 142 || l.status_id === 143);
+  return all;
 }
 
 // =================== FETCH USERS ===================
@@ -89,15 +100,20 @@ async function fetchUsersMap() {
 // =================== CONTACTS ===================
 async function fetchContactsByIds(idList) {
   if (!idList.length) return new Map();
+
   const uniq = [...new Set(idList)];
   const out = new Map();
 
   for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
     const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
     const params = {};
-    chunk.forEach((id, idx) => (params[`id[${idx}]`] = id));
+
+    chunk.forEach((id, idx) => {
+      params[`id[${idx}]`] = id;
+    });
 
     const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
+
     for (const c of data?._embedded?.contacts ?? []) {
       out.set(c.id, c);
     }
@@ -117,7 +133,10 @@ function flattenLead(lead, contactsMap, usersMap) {
     name: lead.name,
     price: lead.price || 0,
     status_id: lead.status_id,
-    status_name: lead.status_id === 142 ? "Lead - Convertido" : "Lead - Perdido",
+    status_name:
+      lead.status_id === 142
+        ? "Lead - Convertido"
+        : "Lead - Perdido",
     responsible_user_id: lead.responsible_user_id || null,
     responsible_user_name:
       usersMap.get(lead.responsible_user_id) || "Sem responsável",
@@ -132,8 +151,10 @@ function flattenLead(lead, contactsMap, usersMap) {
   };
 }
 
-// =================== BUILD COM BLOCO MENSAL ===================
+// =================== BUILD ===================
 async function buildData() {
+  console.log("Iniciando build...");
+
   const usersMap = await fetchUsersMap();
 
   let cursor = dayjs(START_DATE_DEFAULT);
@@ -144,15 +165,15 @@ async function buildData() {
     const inicio = cursor.startOf("month").unix();
     const fim = cursor.endOf("month").unix();
 
-    console.log(
-      `Processando mês: ${cursor.format("MM/YYYY")}`
-    );
+    console.log(`Processando ${cursor.format("MM/YYYY")}`);
 
     const leadsMes = await fetchLeadsFechadosPorMes(inicio, fim);
     allLeads.push(...leadsMes);
 
     cursor = cursor.add(1, "month");
   }
+
+  console.log("Total leads encontrados:", allLeads.length);
 
   const contactIds = allLeads.flatMap(
     (l) => l._embedded?.contacts?.map((c) => c.id) ?? []
@@ -180,23 +201,32 @@ function loadCache() {
 
 // =================== ROUTE ===================
 router.get("/", async (req, res) => {
-  const cache = loadCache();
+  try {
+    const cache = loadCache();
 
-  // se já existe cache → responde instantâneo
-  if (cache.length) {
-    res.json(cache);
+    if (cache.length) {
+      console.log("Respondendo via cache...");
+      res.json(cache);
 
-    // atualiza em background
-    buildData()
-      .then(saveCache)
-      .catch(() => {});
-    return;
+      // atualiza em background
+      buildData()
+        .then(saveCache)
+        .catch((err) =>
+          console.error("Erro atualização background:", err.message)
+        );
+
+      return;
+    }
+
+    console.log("Primeira execução, gerando cache...");
+    const data = await buildData();
+    saveCache(data);
+
+    res.json(data);
+  } catch (err) {
+    console.error("Erro geral:", err);
+    res.status(500).json({ error: "Erro interno" });
   }
-
-  // primeira execução
-  const data = await buildData();
-  saveCache(data);
-  res.json(data);
 });
 
 export default router;
