@@ -1,5 +1,7 @@
 import { Router } from "express";
 import axios from "axios";
+import cors from "cors";
+import compression from "compression";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
@@ -157,14 +159,6 @@ function saveCache() {
   fs.writeFileSync(META_FILE, JSON.stringify({ last_update: IN_MEMORY.last_update }, null, 2));
 }
 
-function loadCache() {
-  try {
-    IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-  } catch {
-    IN_MEMORY.rows = [];
-  }
-}
-
 async function buildAndCache() {
   const [leads, usersMap] = await Promise.all([
     fetchLeadsFechados(),
@@ -181,18 +175,6 @@ async function buildAndCache() {
 
 // =================== ROUTE ===================
 router.get("/", async (req, res) => {
-  loadCache();
-
-  // ⭐ TIMEOUT FIX: responde IMEDIATO se já tiver cache
-  if (IN_MEMORY.rows.length) {
-    res.json(IN_MEMORY.rows);
-
-    // atualiza em background (não bloqueia resposta)
-    buildAndCache().catch(() => {});
-    return;
-  }
-
-  // primeira execução
   await buildAndCache();
   res.json(IN_MEMORY.rows);
 });
