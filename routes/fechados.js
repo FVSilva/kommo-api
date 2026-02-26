@@ -6,31 +6,32 @@ import timezone from "dayjs/plugin/timezone.js";
 import https from "https";
 import axiosRetry from "axios-retry";
 import fs from "fs";
-const router = Router();
-// =================== CONFIG ===================
 
+const router = Router();
+
+// ================= CONFIG =================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-const TOKEN = process.env.KOMMO_TOKEN; // ⚠️ NUNCA hardcode token
+const TOKEN = process.env.KOMMO_TOKEN;
 const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
-const THROTTLE_MS = 200;
+const THROTTLE_MS = 150;
 const CACHE_FILE = "./cache_fechados.json";
 
 if (!TOKEN) {
-  throw new Error("KOMMO_TOKEN não definido nas variáveis de ambiente.");
+  console.error("KOMMO_TOKEN não definido.");
 }
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
 dayjs.tz.setDefault("America/Sao_Paulo");
 
-// =================== INFRA ===================
+// ================= INFRA =================
 axiosRetry(axios, { retries: 3, retryDelay: axiosRetry.exponentialDelay });
 
 const httpAgent = new https.Agent({
   keepAlive: true,
-  maxSockets: 20,
+  maxSockets: 15,
 });
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -45,7 +46,7 @@ async function safeGet(url, params = {}) {
         Accept: "application/json",
       },
       params,
-      timeout: 60000,
+      timeout: 45000,
       httpAgent,
     });
 
@@ -56,8 +57,8 @@ async function safeGet(url, params = {}) {
   }
 }
 
-// =================== FETCH LEADS ===================
-async function fetchLeadsFechadosPorMes(inicio, fim) {
+// ================= FETCH LEADS =================
+async function fetchLeadsPorMes(inicio, fim) {
   let page = 1;
   const all = [];
 
@@ -74,12 +75,11 @@ async function fetchLeadsFechadosPorMes(inicio, fim) {
     const rows = data?._embedded?.leads ?? [];
     if (!rows.length) break;
 
-    // filtra já aqui pra reduzir memória
-    const fechados = rows.filter(
+    const filtrados = rows.filter(
       (l) => l.status_id === 142 || l.status_id === 143
     );
 
-    all.push(...fechados);
+    all.push(...filtrados);
 
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
@@ -88,18 +88,18 @@ async function fetchLeadsFechadosPorMes(inicio, fim) {
   return all;
 }
 
-// =================== FETCH USERS ===================
+// ================= USERS =================
 async function fetchUsersMap() {
   const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
   const users = data?._embedded?.users ?? [];
   return new Map(users.map((u) => [u.id, u.name]));
 }
 
-// =================== CONTACTS ===================
-async function fetchContactsByIds(idList) {
-  if (!idList.length) return new Map();
+// ================= CONTACTS =================
+async function fetchContactsByIds(ids) {
+  if (!ids.length) return new Map();
 
-  const uniq = [...new Set(idList)];
+  const uniq = [...new Set(ids)];
   const out = new Map();
 
   for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
@@ -120,10 +120,10 @@ async function fetchContactsByIds(idList) {
   return out;
 }
 
-// =================== FLATTEN ===================
+// ================= FLATTEN =================
 function flattenLead(lead, contactsMap, usersMap) {
-  const contactRel = lead?._embedded?.contacts ?? [];
-  const main = contactRel.find((c) => c.is_main) || contactRel[0];
+  const rel = lead?._embedded?.contacts ?? [];
+  const main = rel.find((c) => c.is_main) || rel[0];
   const contact = main ? contactsMap.get(main.id) : null;
 
   return {
@@ -149,7 +149,7 @@ function flattenLead(lead, contactsMap, usersMap) {
   };
 }
 
-// =================== BUILD ===================
+// ================= BUILD =================
 async function buildData() {
   console.log("Iniciando build...");
 
@@ -157,7 +157,7 @@ async function buildData() {
 
   let cursor = dayjs(START_DATE_DEFAULT);
   const hoje = dayjs();
-  const allLeads = [];
+  const leads = [];
 
   while (cursor.isBefore(hoje)) {
     const inicio = cursor.startOf("month").unix();
@@ -165,26 +165,28 @@ async function buildData() {
 
     console.log(`Processando ${cursor.format("MM/YYYY")}`);
 
-    const leadsMes = await fetchLeadsFechadosPorMes(inicio, fim);
-    allLeads.push(...leadsMes);
+    const mes = await fetchLeadsPorMes(inicio, fim);
+    leads.push(...mes);
 
     cursor = cursor.add(1, "month");
   }
 
-  console.log("Total leads encontrados:", allLeads.length);
+  console.log("Total leads:", leads.length);
 
-  const contactIds = allLeads.flatMap(
+  const contactIds = leads.flatMap(
     (l) => l._embedded?.contacts?.map((c) => c.id) ?? []
   );
 
   const contactsMap = await fetchContactsByIds(contactIds);
 
-  return allLeads.map((l) =>
+  const finalData = leads.map((l) =>
     flattenLead(l, contactsMap, usersMap)
   );
+
+  return finalData;
 }
 
-// =================== CACHE ===================
+// ================= CACHE =================
 function saveCache(data) {
   fs.writeFileSync(CACHE_FILE, JSON.stringify(data));
 }
@@ -197,16 +199,17 @@ function loadCache() {
   }
 }
 
-// =================== ROUTE ===================
+// ================= ROUTE =================
 router.get("/", async (req, res) => {
   try {
     const cache = loadCache();
 
-    if (cache.length) {
-      console.log("Respondendo via cache...");
+    // Se cache existe → responde instantâneo
+    if (Array.isArray(cache) && cache.length) {
+      console.log("Respondendo via cache");
       res.json(cache);
 
-      // atualiza em background
+      // Atualiza em background
       buildData()
         .then(saveCache)
         .catch((err) =>
@@ -216,14 +219,15 @@ router.get("/", async (req, res) => {
       return;
     }
 
-    console.log("Primeira execução, gerando cache...");
+    console.log("Primeira execução - gerando cache");
+
     const data = await buildData();
     saveCache(data);
 
-    res.json(data);
+    res.json(data); // SEMPRE retorna lista
   } catch (err) {
     console.error("Erro geral:", err);
-    res.status(500).json({ error: "Erro interno" });
+    res.json([]); // NUNCA retorna Record
   }
 });
 
