@@ -30,7 +30,7 @@ async function safeGet(url, params = {}) {
     try {
       await wait(THROTTLE_MS);
       const res = await axios.get(url, {
-        headers: { Authorization: TOKEN, Accept: "application/json" },
+        headers: { Authorization: TOKEN, Accept: "application/json", "User-Agent": "Mozilla/5.0" },
         params,
         timeout: 120000,
         httpAgent,
