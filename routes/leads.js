@@ -36,10 +36,14 @@ async function safeGet(url, params = {}) {
         httpAgent,
       });
       return res.data || {};
-    } catch {
+    } catch (err) {
+      const status = err?.response?.status;
+      const body = JSON.stringify(err?.response?.data ?? {});
+      console.error(`[safeGet] attempt ${attempt} failed — ${url} — status=${status} body=${body}`);
       await wait(2000);
     }
   }
+  console.error(`[safeGet] all attempts failed — ${url}`);
   return {};
 }
 
@@ -232,6 +236,25 @@ router.get("/", async (req, res) => {
     if (!IN_MEMORY.rows.length) await buildAndCache();
   }
   res.json(IN_MEMORY.rows);
+});
+
+router.get("/debug", async (req, res) => {
+  const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
+  const endUnix = dayjs().unix();
+
+  const raw = await safeGet(`${DOMAIN}/api/v4/leads`, {
+    limit: 5,
+    page: 1,
+    "filter[created_at][from]": startUnix,
+    "filter[created_at][to]": endUnix,
+    with: "contacts",
+  });
+
+  res.json({
+    filter: { from: startUnix, to: endUnix },
+    leads_count: raw?._embedded?.leads?.length ?? 0,
+    raw_sample: raw,
+  });
 });
 
 setInterval(buildAndCache, UPDATE_INTERVAL_MINUTES * 60000);
