@@ -11,10 +11,9 @@ const router = Router();
 
 // =================== CONFIG ===================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-const CLIENT_DOMAIN = "suporteexodosaudecom.kommo.com"; // ✅ NOVO
-
 const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjI1YmM5ODE5MWUwYWZjN2UzMmUzOGFmMjkxM2NhMWU2ZGVjYWQ4Y2Q4YjJjNTY1ZWVlNzkyMDFlZDMyNjJhMGE5YzMxMTY1OTc4MjllNzAxIn0.eyJhdWQiOiIyYjE3NzQ0MS1iNTNkLTQ0OWYtYWU3MS1iMWY5NTE3YjMzMWIiLCJqdGkiOiIyNWJjOTgxOTFlMGFmYzdlMzJlMzhhZjI5MTNjYTFlNmRlY2FkOGNkOGIyYzU2NWVlZTc5MjAxZWQzMjYyYTBhOWMzMTE2NTk3ODI5ZTcwMSIsImlhdCI6MTc3NTU5MjYzMCwibmJmIjoxNzc1NTkyNjMwLCJleHAiOjE4OTM0NTYwMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJwdXNoX25vdGlmaWNhdGlvbnMiLCJmaWxlcyIsImNybSIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiZjJlNjI5ZWYtMDViNS00YjJiLWI1MzItYjhiMjQyZTdmY2Y5IiwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.m3XOIBgmnd4zdefRNgC5l_kFbSjOZku5w8c63PJtxlbG6KLAHQvapW3OMmGY55T0G74ykLs_jzd-X2XN1z8X_m48n48fPMRWTKUGKr6L-cAxt2e0qGci38q3oYx67Q0aRlwWjv60-Prz3qrX7ahQJsqBRHaZ1dPqVB3UbB7eSkfvsB52epTqIDTT6Ju2rniI9vbHBSdMv-VciqmEKVRJN3fmsjb0wAcfuAB2YpvBNar9PPxR37B9zZgheuzaqUDwzXE6kG_EVratexy-1f3fGj2SvJOkAncZonDNgTrRj3Nb_gbS4YqXvn3cAHs4SxF7aPu80H_FWzgTg7x7-iqklw";
 
+const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
 const THROTTLE_MS = 300;
@@ -23,34 +22,24 @@ const CACHE_FILE = "./cache.json";
 
 // =================== HTTP INFRA ===================
 axiosRetry(axios, { retries: 5, retryDelay: axiosRetry.exponentialDelay });
-
 const httpAgent = new https.Agent({ keepAlive: true, maxSockets: 60 });
-
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function safeGet(url, params = {}) {
   for (let attempt = 1; attempt <= 10; attempt++) {
     try {
       await wait(THROTTLE_MS);
-
       const res = await axios.get(url, {
-        headers: {
-          Authorization: TOKEN,
-          Accept: "application/json",
-          "X-Client-Domain": CLIENT_DOMAIN, // ✅ ESSENCIAL
-        },
+        headers: { Authorization: TOKEN, Accept: "application/json" },
         params,
         timeout: 120000,
         httpAgent,
       });
-
       return res.data || {};
-    } catch (err) {
-      console.log("Erro tentativa:", attempt, err?.response?.status);
+    } catch {
       await wait(2000);
     }
   }
-
   return {};
 }
 
@@ -70,11 +59,11 @@ const FIXED_STATUS_MAP = {
   64012623: "Aguardando Declaração de Saúde",
   64012627: "Aguardando Operadora",
   64012631: "Pendente Informação ADM",
-  64012635: "Aguardando Assinatura",
-  64012639: "Acompanhar Pagamento",
-  69374483: "Lead Ganho",
-  142: "Convertido",
-  143: "Perdido",
+  64012635: "Aguardando Assinatura / 2° Aceite",
+  64012639: "Acompanhar 1° Pagamento",
+  69374483: "Lead Ganho | Indicação",
+  142: "Lead - Convertido",
+  143: "Lead - Perdido",
 };
 
 // =================== PIPELINES ===================
@@ -87,7 +76,6 @@ async function fetchPipelineStatusMaps() {
 
   for (const p of pipelines) {
     pipelineNameById.set(p.id, p.name);
-
     for (const s of p.statuses ?? []) {
       statusInfoById.set(s.id, {
         pipeline_id: p.id,
@@ -98,22 +86,24 @@ async function fetchPipelineStatusMaps() {
     }
   }
 
+  for (const [id, name] of Object.entries(FIXED_STATUS_MAP)) {
+    const sid = Number(id);
+    const old = statusInfoById.get(sid) || {};
+    statusInfoById.set(sid, { ...old, status_id: sid, status_name: name });
+  }
+
   return { pipelineNameById, statusInfoById };
 }
 
 // =================== USERS ===================
 async function fetchUsersMap() {
   const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
-
-  return new Map(
-    (data?._embedded?.users ?? []).map((u) => [u.id, u.name])
-  );
+  return new Map((data?._embedded?.users ?? []).map((u) => [u.id, u.name]));
 }
 
 // =================== LEADS ===================
 async function fetchLeadsSince() {
-  // 🔥 MELHORADO → pega últimos 12 meses
-  const startUnix = dayjs().subtract(12, "month").unix();
+  const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
   const endUnix = dayjs().unix();
 
   let page = 1;
@@ -123,31 +113,16 @@ async function fetchLeadsSince() {
     const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
       limit: LIMIT_PER_PAGE,
       page,
-
-      // ✅ FORMATO SEGURO
-      filter: {
-        created_at: {
-          from: startUnix,
-          to: endUnix,
-        },
-      },
-
+      filter: { created_at: { from: startUnix, to: endUnix } },
       with: "contacts",
     });
 
     const rows = data?._embedded?.leads ?? [];
-
-    console.log(`Página ${page} → ${rows.length} leads`);
-
     if (!rows.length) break;
-
     all.push(...rows);
-
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
   }
-
-  console.log("TOTAL FINAL:", all.length);
 
   return all;
 }
@@ -155,61 +130,40 @@ async function fetchLeadsSince() {
 // =================== CONTACTS ===================
 async function fetchContactsByIds(idList) {
   if (!idList.length) return new Map();
-
   const uniq = [...new Set(idList)];
   const out = new Map();
 
   for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
     const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
     const params = {};
-
-    chunk.forEach((id, idx) => {
-      params[`id[${idx}]`] = id;
-    });
+    chunk.forEach((id, idx) => (params[`id[${idx}]`] = id));
 
     const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
-
-    for (const c of data?._embedded?.contacts ?? []) {
-      out.set(c.id, c);
-    }
+    for (const c of data?._embedded?.contacts ?? []) out.set(c.id, c);
   }
-
   return out;
 }
 
 // =================== HELPERS ===================
 function normalizeCF(arr, prefix = "") {
   const out = {};
-
   (arr || []).forEach((f) => {
     const key = prefix + (f.field_name || `field_${f.field_id}`);
-    const val = (f.values || [])
-      .map((v) => v.value)
-      .filter(Boolean)
-      .join(", ");
-
+    const val = (f.values || []).map((v) => v.value).filter(Boolean).join(", ");
     out[key] = val || null;
   });
-
   return out;
 }
 
 function pickMainContact(lead, contactsMap) {
   const rel = lead?._embedded?.contacts ?? [];
   if (!rel.length) return null;
-
   const main = rel.find((c) => c.is_main) || rel[0];
   return contactsMap.get(main.id) || null;
 }
 
 // =================== FLATTEN ===================
-function flattenLead(
-  lead,
-  usersMap,
-  pipelineNameById,
-  statusInfoById,
-  contactsMap
-) {
+function flattenLead(lead, usersMap, pipelineNameById, statusInfoById, contactsMap) {
   const statusId = Number(lead.status_id);
   const statusInfo = statusInfoById.get(statusId) ?? {};
   const contact = pickMainContact(lead, contactsMap);
@@ -223,17 +177,19 @@ function flattenLead(
     pipeline_name: pipelineNameById.get(lead.pipeline_id) || null,
 
     status_id: statusId,
-    status_name:
-      statusInfo.status_name || FIXED_STATUS_MAP[statusId] || null,
+    status_name: statusInfo.status_name || FIXED_STATUS_MAP[statusId] || null,
 
-    responsible_user_name:
-      usersMap.get(lead.responsible_user_id) || null,
+    responsible_user_id: lead.responsible_user_id || null,
+    responsible_user_name: usersMap.get(lead.responsible_user_id) || null,
 
     created_at: dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss"),
+    updated_at: lead.updated_at ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss") : null,
+    closed_at: lead.closed_at ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss") : null,
 
     ...normalizeCF(lead.custom_fields_values),
     ...normalizeCF(contact?.custom_fields_values, "contact_"),
 
+    contact_id: contact?.id || null,
     contact_name: contact?.name || null,
   };
 }
@@ -252,49 +208,31 @@ function loadCache() {
 }
 
 async function buildAndCache() {
-  console.log("🔄 Atualizando cache...");
-
   const [leads, usersMap, maps] = await Promise.all([
     fetchLeadsSince(),
     fetchUsersMap(),
     fetchPipelineStatusMaps(),
   ]);
 
-  const contactIds = leads.flatMap(
-    (l) => l._embedded?.contacts?.map((c) => c.id) ?? []
-  );
-
+  const contactIds = leads.flatMap((l) => l._embedded?.contacts?.map((c) => c.id) ?? []);
   const contactsMap = await fetchContactsByIds(contactIds);
 
   IN_MEMORY.rows = leads.map((l) =>
-    flattenLead(
-      l,
-      usersMap,
-      maps.pipelineNameById,
-      maps.statusInfoById,
-      contactsMap
-    )
+    flattenLead(l, usersMap, maps.pipelineNameById, maps.statusInfoById, contactsMap)
   );
 
   saveCache();
-
-  console.log("✅ Cache atualizado:", IN_MEMORY.rows.length);
 }
 
 // =================== ROUTE ===================
 router.get("/", async (req, res) => {
   if (!IN_MEMORY.rows.length) {
     loadCache();
-
-    if (!IN_MEMORY.rows.length) {
-      await buildAndCache();
-    }
+    if (!IN_MEMORY.rows.length) await buildAndCache();
   }
-
   res.json(IN_MEMORY.rows);
 });
 
-// =================== CRON ===================
 setInterval(buildAndCache, UPDATE_INTERVAL_MINUTES * 60000);
 
 export default router;
