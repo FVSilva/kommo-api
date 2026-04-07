@@ -13,7 +13,7 @@ const router = Router();
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
 const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjM5MDhiZmRiNWVkNTE0N2ZjOTYzMjU1MDAyNTAxMzBhZDZmNTRmYWI1NWZhZTRjZWJhYzg5ODFlNGU0ZTc2OWVkNjQ2Zjg4MmZiMTQ2ODM3In0.eyJhdWQiOiIyZjExZGYxNC04ZTc4LTQyZmEtYTQxOC1mOWZkMmMxM2JkYjIiLCJqdGkiOiIzOTA4YmZkYjVlZDUxNDdmYzk2MzI1NTAwMjUwMTMwYWQ2ZjU0ZmFiNTVmYWU0Y2ViYWM4OTgxZTRlNGU3NjllZDY0NmY4ODJmYjE0NjgzNyIsImlhdCI6MTc3NDcxNDU2MSwibmJmIjoxNzc0NzE0NTYxLCJleHAiOjE4NTEzNzkyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJwdXNoX25vdGlmaWNhdGlvbnMiLCJmaWxlcyIsImNybSIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiZWY5YjE3NDgtMzY3Ny00MGU2LWJkMjYtMmZiM2E2M2Q3NzYwIiwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.SVkjNnjG6gtFfjcC9kpVniBLHosmZKbfxDt7Q8fo6Wx676ZYYyRDWk-4fGEmV85Wd9xjtGwLQcHtHk25eXFXRsGsLY8_uIdf1OkXt67n0JLmK5LN_tPlPnzfk32rQcJRaZH7uXDSa8J2xwE2A9yhU15v_KmAfjlz7dcYooy-oXoLzd_O9tLcRdDcequ1Gpefl6ZWVNh8a46k7GCM-_tHUDHlBZOTT5hWYURl18-HsOAb0e11WE9Fmo_IiYMRIPTBDv1zkVuIS9NAbCFtsEQscW3V2U1UQdxHlo6szzGk5QbnCLJdy_yu_hS7DUQJ6K4VKH-3r2cNVX-uedxZ_dx6Ng";
 
-const START_DATE_DEFAULT = "2026-02-01";
+const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
 const THROTTLE_MS = 300;
@@ -103,7 +103,7 @@ async function fetchUsersMap() {
 
 // =================== LEADS ===================
 async function fetchLeadsSince() {
-  const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
+  const startUnix = dayjs("2025-11-01").startOf("day").unix(); // 👈 FORÇANDO NOV/2025
   const endUnix = dayjs().unix();
 
   let page = 1;
@@ -113,19 +113,31 @@ async function fetchLeadsSince() {
     const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
       limit: LIMIT_PER_PAGE,
       page,
-      filter: { created_at: { from: startUnix, to: endUnix } },
+
+      // ✅ FORMATO CORRETO PRA KOMMO
+      "filter[created_at][from]": startUnix,
+      "filter[created_at][to]": endUnix,
+
       with: "contacts",
     });
 
     const rows = data?._embedded?.leads ?? [];
+
+    console.log(`Página ${page} → ${rows.length} leads`);
+
     if (!rows.length) break;
+
     all.push(...rows);
+
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
   }
 
+  console.log("TOTAL FINAL:", all.length);
+
   return all;
 }
+
 
 // =================== CONTACTS ===================
 async function fetchContactsByIds(idList) {
