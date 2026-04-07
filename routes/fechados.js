@@ -1,5 +1,7 @@
 import { Router } from "express";
 import axios from "axios";
+import cors from "cors";
+import compression from "compression";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
@@ -9,56 +11,87 @@ import fs from "fs";
 
 const router = Router();
 
-// ================= CONFIG =================
+// =================== CONFIG ===================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-const TOKEN = process.env.KOMMO_TOKEN;
+const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjlmN2ZkMmU2YTA5YTQ1YWVhMjUxMmE0YmFkMTAyZGQ5YmY0NzZlNTg4MDgwOGU2MmUxNjE3ODc4N2MxN2E4M2Y1NjAzMjk5Njg0YTQ4ZDhiIn0.eyJhdWQiOiI5MDdlYTRlMS0wNWU4LTQ5NTktYjUwYi0yM2JlYTU5OWFmNTMiLCJqdGkiOiI5ZjdmZDJlNmEwOWE0NWFlYTI1MTJhNGJhZDEwMmRkOWJmNDc2ZTU4ODA4MDhlNjJlMTYxNzg3ODdjMTdhODNmNTYwMzI5OTY4NGE0OGQ4YiIsImlhdCI6MTc3NTU5NDE4MiwibmJmIjoxNzc1NTk0MTgyLCJleHAiOjE4OTg1NTM2MDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJwdXNoX25vdGlmaWNhdGlvbnMiLCJmaWxlcyIsImNybSIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiZmJhZGY2ZDQtNjAzNi00MmY0LThhMDMtYWRlZThjN2E1OGM2IiwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.HSKKSPnrq3EX87nWvVgu8xiSDNavqXkwkXKGHQcbnHyaTqeZAGROQuhvY5VtxIO3ilwNJcXYq3zLEWSR7MU4nQ5xohMiDu6y_yyO-AgT8jFLkqDukIKouzv1Cdd2C-Cqf5NGEssqEdh3quDjlqq_TziZnZdV03Gas2YQpNdyP8EUd9N4RAV-KzIKaJu0vj82caHnDFpslrBdHT-9fNOYeF9g4Do41Y5Roo3k23__xJQsvT7atk0kwihWfWaB25x35bZmOo8i6Tq4ia_KQKQoAlqLqY4dhE-JAyWuQUFVXNuhLL0X6YhhryHGkfspm08be394-qYEaY3FpXDt78BLIQ";
+
 const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
-const THROTTLE_MS = 150;
+const THROTTLE_MS = 300;
 const CACHE_FILE = "./cache_fechados.json";
+const META_FILE = "./cache_meta_fechados.json";
 
-if (!TOKEN) {
-  console.error("KOMMO_TOKEN não definido.");
-}
-
+// =================== TIMEZONE ===================
 dayjs.extend(utc);
 dayjs.extend(timezone);
 dayjs.tz.setDefault("America/Sao_Paulo");
 
-// ================= INFRA =================
-axiosRetry(axios, { retries: 3, retryDelay: axiosRetry.exponentialDelay });
-
-const httpAgent = new https.Agent({
-  keepAlive: true,
-  maxSockets: 15,
-});
-
+// =================== INFRA ===================
+axiosRetry(axios, { retries: 5, retryDelay: axiosRetry.exponentialDelay });
+const httpAgent = new https.Agent({ keepAlive: true, maxSockets: 60 });
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function safeGet(url, params = {}) {
-  try {
-    await wait(THROTTLE_MS);
-
-    const res = await axios.get(url, {
-      headers: {
-        Authorization: TOKEN,
-        Accept: "application/json",
-      },
-      params,
-      timeout: 45000,
-      httpAgent,
-    });
-
-    return res.data || {};
-  } catch (err) {
-    console.error("Erro HTTP:", err.message);
-    return {};
+  for (let attempt = 1; attempt <= 10; attempt++) {
+    try {
+      await wait(THROTTLE_MS);
+      const res = await axios.get(url, {
+        headers: { Authorization: TOKEN, Accept: "application/json" },
+        params,
+        timeout: 120000,
+        httpAgent,
+      });
+      return res.data || {};
+    } catch (err) {
+      const status = err.response?.status;
+      if (status === 429) {
+        await wait(2000);
+        continue;
+      }
+      console.error("❌ HTTP:", status, err.message);
+      return {};
+    }
   }
+  return {};
 }
 
-// ================= FETCH LEADS =================
-async function fetchLeadsPorMes(inicio, fim) {
+// =================== STATUS MAP ===================
+const FIXED_STATUS_MAP = {
+  142: "Lead - Convertido",
+  143: "Lead - Perdido",
+};
+
+// =================== HELPERS ===================
+function normalizeCF(arr, prefix = "") {
+  const out = {};
+  (arr || []).forEach((f) => {
+    const key = prefix + (f.field_name || `field_${f.field_id}`);
+    const val = (f.values || []).map((v) => v.value).filter(Boolean).join(", ");
+    out[key] = val || null;
+  });
+  return out;
+}
+
+function pickMainContact(lead, contactsMap) {
+  const rel = lead?._embedded?.contacts ?? [];
+  if (!rel.length) return null;
+  const main = rel.find((c) => c.is_main) || rel[0];
+  return contactsMap.get(main.id) || null;
+}
+
+// =================== USERS ===================
+async function fetchUsersMap() {
+  const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
+  const users = data?._embedded?.users ?? [];
+  return new Map(users.map((u) => [u.id, u.name]));
+}
+
+// =================== LEADS FECHADOS ===================
+async function fetchLeadsFechados() {
+  const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
+  const endUnix = dayjs().endOf("day").unix();
+
   let page = 1;
   const all = [];
 
@@ -66,169 +99,84 @@ async function fetchLeadsPorMes(inicio, fim) {
     const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
       limit: LIMIT_PER_PAGE,
       page,
-      filter: {
-        closed_at: { from: inicio, to: fim },
-      },
+      filter: { closed_at: { from: startUnix, to: endUnix } },
       with: "contacts",
     });
 
     const rows = data?._embedded?.leads ?? [];
     if (!rows.length) break;
-
-    const filtrados = rows.filter(
-      (l) => l.status_id === 142 || l.status_id === 143
-    );
-
-    all.push(...filtrados);
-
+    all.push(...rows);
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
   }
 
-  return all;
+  return all.filter((l) => l.status_id === 142 || l.status_id === 143);
 }
 
-// ================= USERS =================
-async function fetchUsersMap() {
-  const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
-  const users = data?._embedded?.users ?? [];
-  return new Map(users.map((u) => [u.id, u.name]));
-}
-
-// ================= CONTACTS =================
-async function fetchContactsByIds(ids) {
-  if (!ids.length) return new Map();
-
-  const uniq = [...new Set(ids)];
+// =================== CONTACTS ===================
+async function fetchContactsByIds(idList) {
+  if (!idList.length) return new Map();
+  const uniq = [...new Set(idList)];
   const out = new Map();
 
   for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
     const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
     const params = {};
-
-    chunk.forEach((id, idx) => {
-      params[`id[${idx}]`] = id;
-    });
-
+    chunk.forEach((id, idx) => (params[`id[${idx}]`] = id));
     const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
-
-    for (const c of data?._embedded?.contacts ?? []) {
-      out.set(c.id, c);
-    }
+    for (const c of data?._embedded?.contacts ?? []) out.set(c.id, c);
   }
-
   return out;
 }
 
-// ================= FLATTEN =================
+// =================== FLATTEN ===================
 function flattenLead(lead, contactsMap, usersMap) {
-  const rel = lead?._embedded?.contacts ?? [];
-  const main = rel.find((c) => c.is_main) || rel[0];
-  const contact = main ? contactsMap.get(main.id) : null;
+  const contact = pickMainContact(lead, contactsMap);
+  const contactCF = contact ? normalizeCF(contact.custom_fields_values, "contact_") : {};
 
   return {
     id: lead.id,
     name: lead.name,
     price: lead.price || 0,
     status_id: lead.status_id,
-    status_name:
-      lead.status_id === 142
-        ? "Lead - Convertido"
-        : "Lead - Perdido",
+    status_name: FIXED_STATUS_MAP[lead.status_id] || "Outro",
     responsible_user_id: lead.responsible_user_id || null,
-    responsible_user_name:
-      usersMap.get(lead.responsible_user_id) || "Sem responsável",
-    created_at: lead.created_at
-      ? dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss")
-      : null,
-    closed_at: lead.closed_at
-      ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss")
-      : null,
+    responsible_user_name: usersMap.get(lead.responsible_user_id) || "Sem responsável",
+    created_at: lead.created_at ? dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss") : null,
+    updated_at: lead.updated_at ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss") : null,
+    closed_at: lead.closed_at ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss") : null,
     contact_id: contact?.id || null,
     contact_name: contact?.name || null,
+    ...contactCF,
   };
 }
 
-// ================= BUILD =================
-async function buildData() {
-  console.log("Iniciando build...");
+// =================== CACHE ===================
+let IN_MEMORY = { rows: [], last_update: null };
 
-  const usersMap = await fetchUsersMap();
+function saveCache() {
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY.rows, null, 2));
+  fs.writeFileSync(META_FILE, JSON.stringify({ last_update: IN_MEMORY.last_update }, null, 2));
+}
 
-  let cursor = dayjs(START_DATE_DEFAULT);
-  const hoje = dayjs();
-  const leads = [];
+async function buildAndCache() {
+  const [leads, usersMap] = await Promise.all([
+    fetchLeadsFechados(),
+    fetchUsersMap(),
+  ]);
 
-  while (cursor.isBefore(hoje)) {
-    const inicio = cursor.startOf("month").unix();
-    const fim = cursor.endOf("month").unix();
-
-    console.log(`Processando ${cursor.format("MM/YYYY")}`);
-
-    const mes = await fetchLeadsPorMes(inicio, fim);
-    leads.push(...mes);
-
-    cursor = cursor.add(1, "month");
-  }
-
-  console.log("Total leads:", leads.length);
-
-  const contactIds = leads.flatMap(
-    (l) => l._embedded?.contacts?.map((c) => c.id) ?? []
-  );
-
+  const contactIds = leads.flatMap((l) => l._embedded?.contacts?.map((c) => c.id) ?? []);
   const contactsMap = await fetchContactsByIds(contactIds);
 
-  const finalData = leads.map((l) =>
-    flattenLead(l, contactsMap, usersMap)
-  );
-
-  return finalData;
+  IN_MEMORY.rows = leads.map((l) => flattenLead(l, contactsMap, usersMap));
+  IN_MEMORY.last_update = dayjs().format("YYYY-MM-DD HH:mm:ss");
+  saveCache();
 }
 
-// ================= CACHE =================
-function saveCache(data) {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(data));
-}
-
-function loadCache() {
-  try {
-    return JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-  } catch {
-    return [];
-  }
-}
-
-// ================= ROUTE =================
+// =================== ROUTE ===================
 router.get("/", async (req, res) => {
-  try {
-    const cache = loadCache();
-
-    // Se cache existe → responde instantâneo
-    if (Array.isArray(cache) && cache.length) {
-      console.log("Respondendo via cache");
-      res.json(cache);
-
-      // Atualiza em background
-      buildData()
-        .then(saveCache)
-        .catch((err) =>
-          console.error("Erro atualização background:", err.message)
-        );
-
-      return;
-    }
-
-    console.log("Primeira execução - gerando cache");
-
-    const data = await buildData();
-    saveCache(data);
-
-    res.json(data); // SEMPRE retorna lista
-  } catch (err) {
-    console.error("Erro geral:", err);
-    res.json([]); // NUNCA retorna Record
-  }
+  await buildAndCache();
+  res.json(IN_MEMORY.rows);
 });
 
 export default router;
