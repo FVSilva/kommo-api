@@ -113,7 +113,8 @@ async function fetchLeadsSince() {
     const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
       limit: LIMIT_PER_PAGE,
       page,
-      filter: { created_at: { from: startUnix, to: endUnix } },
+      "filter[created_at][from]": startUnix,
+      "filter[created_at][to]": endUnix,
       with: "contacts",
     });
 
