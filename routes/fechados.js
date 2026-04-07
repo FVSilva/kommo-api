@@ -1,7 +1,5 @@
 import { Router } from "express";
 import axios from "axios";
-import cors from "cors";
-import compression from "compression";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc.js";
 import timezone from "dayjs/plugin/timezone.js";
@@ -11,85 +9,56 @@ import fs from "fs";
 
 const router = Router();
 
-// =================== CONFIG ===================
+// ================= CONFIG =================
 const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjM5MDhiZmRiNWVkNTE0N2ZjOTYzMjU1MDAyNTAxMzBhZDZmNTRmYWI1NWZhZTRjZWJhYzg5ODFlNGU0ZTc2OWVkNjQ2Zjg4MmZiMTQ2ODM3In0.eyJhdWQiOiIyZjExZGYxNC04ZTc4LTQyZmEtYTQxOC1mOWZkMmMxM2JkYjIiLCJqdGkiOiIzOTA4YmZkYjVlZDUxNDdmYzk2MzI1NTAwMjUwMTMwYWQ2ZjU0ZmFiNTVmYWU0Y2ViYWM4OTgxZTRlNGU3NjllZDY0NmY4ODJmYjE0NjgzNyIsImlhdCI6MTc3NDcxNDU2MSwibmJmIjoxNzc0NzE0NTYxLCJleHAiOjE4NTEzNzkyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJwdXNoX25vdGlmaWNhdGlvbnMiLCJmaWxlcyIsImNybSIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiZWY5YjE3NDgtMzY3Ny00MGU2LWJkMjYtMmZiM2E2M2Q3NzYwIiwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.SVkjNnjG6gtFfjcC9kpVniBLHosmZKbfxDt7Q8fo6Wx676ZYYyRDWk-4fGEmV85Wd9xjtGwLQcHtHk25eXFXRsGsLY8_uIdf1OkXt67n0JLmK5LN_tPlPnzfk32rQcJRaZH7uXDSa8J2xwE2A9yhU15v_KmAfjlz7dcYooy-oXoLzd_O9tLcRdDcequ1Gpefl6ZWVNh8a46k7GCM-_tHUDHlBZOTT5hWYURl18-HsOAb0e11WE9Fmo_IiYMRIPTBDv1zkVuIS9NAbCFtsEQscW3V2U1UQdxHlo6szzGk5QbnCLJdy_yu_hS7DUQJ6K4VKH-3r2cNVX-uedxZ_dx6Ng";
+const TOKEN = process.env.KOMMO_TOKEN;
+const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
-const THROTTLE_MS = 300;
+const THROTTLE_MS = 150;
 const CACHE_FILE = "./cache_fechados.json";
-const META_FILE = "./cache_meta_fechados.json";
 
-// =================== TIMEZONE ===================
+if (!TOKEN) {
+  console.error("KOMMO_TOKEN não definido.");
+}
+
 dayjs.extend(utc);
 dayjs.extend(timezone);
 dayjs.tz.setDefault("America/Sao_Paulo");
 
-// =================== INFRA ===================
-axiosRetry(axios, { retries: 5, retryDelay: axiosRetry.exponentialDelay });
-const httpAgent = new https.Agent({ keepAlive: true, maxSockets: 60 });
+// ================= INFRA =================
+axiosRetry(axios, { retries: 3, retryDelay: axiosRetry.exponentialDelay });
+
+const httpAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 15,
+});
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function safeGet(url, params = {}) {
-  for (let attempt = 1; attempt <= 10; attempt++) {
-    try {
-      await wait(THROTTLE_MS);
-      const res = await axios.get(url, {
-        headers: { Authorization: TOKEN, Accept: "application/json" },
-        params,
-        timeout: 120000,
-        httpAgent,
-      });
-      return res.data || {};
-    } catch (err) {
-      const status = err.response?.status;
-      if (status === 429) {
-        await wait(2000);
-        continue;
-      }
-      console.error("❌ HTTP:", status, err.message);
-      return {};
-    }
+  try {
+    await wait(THROTTLE_MS);
+
+    const res = await axios.get(url, {
+      headers: {
+        Authorization: TOKEN,
+        Accept: "application/json",
+      },
+      params,
+      timeout: 45000,
+      httpAgent,
+    });
+
+    return res.data || {};
+  } catch (err) {
+    console.error("Erro HTTP:", err.message);
+    return {};
   }
-  return {};
 }
 
-// =================== STATUS MAP ===================
-const FIXED_STATUS_MAP = {
-  142: "Lead - Convertido",
-  143: "Lead - Perdido",
-};
-
-// =================== HELPERS ===================
-function normalizeCF(arr, prefix = "") {
-  const out = {};
-  (arr || []).forEach((f) => {
-    const key = prefix + (f.field_name || `field_${f.field_id}`);
-    const val = (f.values || []).map((v) => v.value).filter(Boolean).join(", ");
-    out[key] = val || null;
-  });
-  return out;
-}
-
-function pickMainContact(lead, contactsMap) {
-  const rel = lead?._embedded?.contacts ?? [];
-  if (!rel.length) return null;
-  const main = rel.find((c) => c.is_main) || rel[0];
-  return contactsMap.get(main.id) || null;
-}
-
-// =================== USERS ===================
-async function fetchUsersMap() {
-  const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
-  const users = data?._embedded?.users ?? [];
-  return new Map(users.map((u) => [u.id, u.name]));
-}
-
-// =================== LEADS FECHADOS ===================
-async function fetchLeadsFechados() {
-  const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
-  const endUnix = dayjs().endOf("day").unix();
-
+// ================= FETCH LEADS =================
+async function fetchLeadsPorMes(inicio, fim) {
   let page = 1;
   const all = [];
 
@@ -97,84 +66,169 @@ async function fetchLeadsFechados() {
     const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
       limit: LIMIT_PER_PAGE,
       page,
-      filter: { closed_at: { from: startUnix, to: endUnix } },
+      filter: {
+        closed_at: { from: inicio, to: fim },
+      },
       with: "contacts",
     });
 
     const rows = data?._embedded?.leads ?? [];
     if (!rows.length) break;
-    all.push(...rows);
+
+    const filtrados = rows.filter(
+      (l) => l.status_id === 142 || l.status_id === 143
+    );
+
+    all.push(...filtrados);
+
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
   }
 
-  return all.filter((l) => l.status_id === 142 || l.status_id === 143);
+  return all;
 }
 
-// =================== CONTACTS ===================
-async function fetchContactsByIds(idList) {
-  if (!idList.length) return new Map();
-  const uniq = [...new Set(idList)];
+// ================= USERS =================
+async function fetchUsersMap() {
+  const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
+  const users = data?._embedded?.users ?? [];
+  return new Map(users.map((u) => [u.id, u.name]));
+}
+
+// ================= CONTACTS =================
+async function fetchContactsByIds(ids) {
+  if (!ids.length) return new Map();
+
+  const uniq = [...new Set(ids)];
   const out = new Map();
 
   for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
     const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
     const params = {};
-    chunk.forEach((id, idx) => (params[`id[${idx}]`] = id));
+
+    chunk.forEach((id, idx) => {
+      params[`id[${idx}]`] = id;
+    });
+
     const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
-    for (const c of data?._embedded?.contacts ?? []) out.set(c.id, c);
+
+    for (const c of data?._embedded?.contacts ?? []) {
+      out.set(c.id, c);
+    }
   }
+
   return out;
 }
 
-// =================== FLATTEN ===================
+// ================= FLATTEN =================
 function flattenLead(lead, contactsMap, usersMap) {
-  const contact = pickMainContact(lead, contactsMap);
-  const contactCF = contact ? normalizeCF(contact.custom_fields_values, "contact_") : {};
+  const rel = lead?._embedded?.contacts ?? [];
+  const main = rel.find((c) => c.is_main) || rel[0];
+  const contact = main ? contactsMap.get(main.id) : null;
 
   return {
     id: lead.id,
     name: lead.name,
     price: lead.price || 0,
     status_id: lead.status_id,
-    status_name: FIXED_STATUS_MAP[lead.status_id] || "Outro",
+    status_name:
+      lead.status_id === 142
+        ? "Lead - Convertido"
+        : "Lead - Perdido",
     responsible_user_id: lead.responsible_user_id || null,
-    responsible_user_name: usersMap.get(lead.responsible_user_id) || "Sem responsável",
-    created_at: lead.created_at ? dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss") : null,
-    updated_at: lead.updated_at ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss") : null,
-    closed_at: lead.closed_at ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss") : null,
+    responsible_user_name:
+      usersMap.get(lead.responsible_user_id) || "Sem responsável",
+    created_at: lead.created_at
+      ? dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss")
+      : null,
+    closed_at: lead.closed_at
+      ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss")
+      : null,
     contact_id: contact?.id || null,
     contact_name: contact?.name || null,
-    ...contactCF,
   };
 }
 
-// =================== CACHE ===================
-let IN_MEMORY = { rows: [], last_update: null };
+// ================= BUILD =================
+async function buildData() {
+  console.log("Iniciando build...");
 
-function saveCache() {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY.rows, null, 2));
-  fs.writeFileSync(META_FILE, JSON.stringify({ last_update: IN_MEMORY.last_update }, null, 2));
-}
+  const usersMap = await fetchUsersMap();
 
-async function buildAndCache() {
-  const [leads, usersMap] = await Promise.all([
-    fetchLeadsFechados(),
-    fetchUsersMap(),
-  ]);
+  let cursor = dayjs(START_DATE_DEFAULT);
+  const hoje = dayjs();
+  const leads = [];
 
-  const contactIds = leads.flatMap((l) => l._embedded?.contacts?.map((c) => c.id) ?? []);
+  while (cursor.isBefore(hoje)) {
+    const inicio = cursor.startOf("month").unix();
+    const fim = cursor.endOf("month").unix();
+
+    console.log(`Processando ${cursor.format("MM/YYYY")}`);
+
+    const mes = await fetchLeadsPorMes(inicio, fim);
+    leads.push(...mes);
+
+    cursor = cursor.add(1, "month");
+  }
+
+  console.log("Total leads:", leads.length);
+
+  const contactIds = leads.flatMap(
+    (l) => l._embedded?.contacts?.map((c) => c.id) ?? []
+  );
+
   const contactsMap = await fetchContactsByIds(contactIds);
 
-  IN_MEMORY.rows = leads.map((l) => flattenLead(l, contactsMap, usersMap));
-  IN_MEMORY.last_update = dayjs().format("YYYY-MM-DD HH:mm:ss");
-  saveCache();
+  const finalData = leads.map((l) =>
+    flattenLead(l, contactsMap, usersMap)
+  );
+
+  return finalData;
 }
 
-// =================== ROUTE ===================
+// ================= CACHE =================
+function saveCache(data) {
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(data));
+}
+
+function loadCache() {
+  try {
+    return JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+  } catch {
+    return [];
+  }
+}
+
+// ================= ROUTE =================
 router.get("/", async (req, res) => {
-  await buildAndCache();
-  res.json(IN_MEMORY.rows);
+  try {
+    const cache = loadCache();
+
+    // Se cache existe → responde instantâneo
+    if (Array.isArray(cache) && cache.length) {
+      console.log("Respondendo via cache");
+      res.json(cache);
+
+      // Atualiza em background
+      buildData()
+        .then(saveCache)
+        .catch((err) =>
+          console.error("Erro atualização background:", err.message)
+        );
+
+      return;
+    }
+
+    console.log("Primeira execução - gerando cache");
+
+    const data = await buildData();
+    saveCache(data);
+
+    res.json(data); // SEMPRE retorna lista
+  } catch (err) {
+    console.error("Erro geral:", err);
+    res.json([]); // NUNCA retorna Record
+  }
 });
 
 export default router;
