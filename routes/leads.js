@@ -1,7 +1,5 @@
 import { Router } from "express";
 import axios from "axios";
-import cors from "cors";
-import compression from "compression";
 import dayjs from "dayjs";
 import https from "https";
 import axiosRetry from "axios-retry";
@@ -10,8 +8,13 @@ import fs from "fs";
 const router = Router();
 
 // =================== CONFIG ===================
-const DOMAIN = "https://suporteexodosaudecom.kommo.com";
-const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjlmN2ZkMmU2YTA5YTQ1YWVhMjUxMmE0YmFkMTAyZGQ5YmY0NzZlNTg4MDgwOGU2MmUxNjE3ODc4N2MxN2E4M2Y1NjAzMjk5Njg0YTQ4ZDhiIn0.eyJhdWQiOiI5MDdlYTRlMS0wNWU4LTQ5NTktYjUwYi0yM2JlYTU5OWFmNTMiLCJqdGkiOiI5ZjdmZDJlNmEwOWE0NWFlYTI1MTJhNGJhZDEwMmRkOWJmNDc2ZTU4ODA4MDhlNjJlMTYxNzg3ODdjMTdhODNmNTYwMzI5OTY4NGE0OGQ4YiIsImlhdCI6MTc3NTU5NDE4MiwibmJmIjoxNzc1NTk0MTgyLCJleHAiOjE4OTg1NTM2MDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJwdXNoX25vdGlmaWNhdGlvbnMiLCJmaWxlcyIsImNybSIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiZmJhZGY2ZDQtNjAzNi00MmY0LThhMDMtYWRlZThjN2E1OGM2IiwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.HSKKSPnrq3EX87nWvVgu8xiSDNavqXkwkXKGHQcbnHyaTqeZAGROQuhvY5VtxIO3ilwNJcXYq3zLEWSR7MU4nQ5xohMiDu6y_yyO-AgT8jFLkqDukIKouzv1Cdd2C-Cqf5NGEssqEdh3quDjlqq_TziZnZdV03Gas2YQpNdyP8EUd9N4RAV-KzIKaJu0vj82caHnDFpslrBdHT-9fNOYeF9g4Do41Y5Roo3k23__xJQsvT7atk0kwihWfWaB25x35bZmOo8i6Tq4ia_KQKQoAlqLqY4dhE-JAyWuQUFVXNuhLL0X6YhhryHGkfspm08be394-qYEaY3FpXDt78BLIQ"
+const DOMAINS = [
+  "https://suporteexodosaudecom.kommo.com",
+  "https://api-g.kommo.com",
+];
+
+const TOKEN =
+  "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6Ijg3ZDM3MTQ2YmQ2YzJlMTNhMjdhZjRmYzVkYTNkNWUwZTkyNDkxYjMyY2I0MGYwYTJjYmYyMWRkMjg0YzI1MmM0YmZiMjlhNzhiZmE4ZmEwIn0.eyJhdWQiOiI5MDdlYTRlMS0wNWU4LTQ5NTktYjUwYi0yM2JlYTU5OWFmNTMiLCJqdGkiOiI4N2QzNzE0NmJkNmMyZTEzYTI3YWY0ZmM1ZGEzZDVlMGU5MjQ5MWIzMmNiNDBmMGEyY2JmMjFkZDI4NGMyNTJjNGJmYjI5YTc4YmZhOGZhMCIsImlhdCI6MTc3NTY5NTQ1OSwibmJmIjoxNzc1Njk1NDU5LCJleHAiOjE4MTQ0ODY0MDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJwdXNoX25vdGlmaWNhdGlvbnMiLCJmaWxlcyIsImNybSIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiMmYzOThhYjMtY2FhNy00YjEwLTg0OGQtYjk2MDQ1ZWI4MzdkIiwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.kIllfN-LwRo5s6j62v9prZ0Fj1SkQZicT_Q4yMG0kGbxmKrL73aLVb-xwD817QC_9LvMcWXMAC9L02nYHXX2gKDgJpq7MfiIME6jy2rQRiBZRWVVqLG4FncIDuX9yhvI-2Irhv9O16teF7UbPWYtiUXc6CvDtujMP5TpMSyNptXZkaxlsjDwNUXlut8SEsYAilMiUukOR9JCCfqUPDyP-iS6Dn-ccX9VyYqZdLlYPtyM74K8vFuBhzFx7W8Tfwa-Iqxj5vIzpMW0VzOyLuMwq6UsNbw8LDtsqBoRImqvSLvdjFgMg3kchZq4dveY40TZQ_XwoxFRjYhduYLbeswC5g";
 
 const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
@@ -21,29 +24,94 @@ const UPDATE_INTERVAL_MINUTES = 30;
 const CACHE_FILE = "./cache.json";
 
 // =================== HTTP INFRA ===================
-axiosRetry(axios, { retries: 5, retryDelay: axiosRetry.exponentialDelay });
-const httpAgent = new https.Agent({ keepAlive: true, maxSockets: 60 });
+axiosRetry(axios, {
+  retries: 2,
+  retryDelay: axiosRetry.exponentialDelay,
+  retryCondition: (error) => {
+    const status = error?.response?.status;
+    if (status === 401 || status === 403) return false;
+    return axiosRetry.isNetworkOrIdempotentRequestError(error);
+  },
+});
+
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 60,
+});
+
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function safeGet(url, params = {}) {
-  for (let attempt = 1; attempt <= 10; attempt++) {
-    try {
-      await wait(THROTTLE_MS);
-      const res = await axios.get(url, {
-        headers: { Authorization: TOKEN, Accept: "application/json", "User-Agent": "Mozilla/5.0" },
-        params,
-        timeout: 120000,
-        httpAgent,
-      });
-      return res.data || {};
-    } catch (err) {
-      const status = err?.response?.status;
-      const body = JSON.stringify(err?.response?.data ?? {});
-      console.error(`[safeGet] attempt ${attempt} failed — ${url} — status=${status} body=${body}`);
-      await wait(2000);
+async function safeGet(path, params = {}) {
+  let lastError = null;
+
+  for (const domain of DOMAINS) {
+    const url = `${domain}${path}`;
+
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await wait(THROTTLE_MS);
+
+        const res = await axios.get(url, {
+          headers: {
+            Authorization: TOKEN,
+            Accept: "application/json",
+            "Content-Type": "application/json",
+          },
+          params,
+          timeout: 30000,
+          httpsAgent,
+          validateStatus: () => true,
+        });
+
+        if (res.status >= 200 && res.status < 300) {
+          return res.data || {};
+        }
+
+        console.error(`[safeGet] attempt ${attempt} failed`, {
+          url,
+          status: res.status,
+          body: typeof res.data === "string" ? res.data : JSON.stringify(res.data),
+        });
+
+        lastError = {
+          domain,
+          url,
+          status: res.status,
+          body: res.data,
+        };
+
+        if (res.status === 401 || res.status === 403) {
+          break;
+        }
+
+        await wait(1500 * attempt);
+      } catch (err) {
+        const status = err?.response?.status ?? null;
+        const body = err?.response?.data ?? err.message;
+
+        console.error(`[safeGet] attempt ${attempt} exception`, {
+          url,
+          status,
+          body,
+        });
+
+        lastError = {
+          domain,
+          url,
+          status,
+          body,
+        };
+
+        if (status === 401 || status === 403) {
+          break;
+        }
+
+        await wait(1500 * attempt);
+      }
     }
   }
-  console.error(`[safeGet] all attempts failed — ${url}`);
+
+  console.error("[safeGet] all attempts failed", lastError);
   return {};
 }
 
@@ -72,7 +140,7 @@ const FIXED_STATUS_MAP = {
 
 // =================== PIPELINES ===================
 async function fetchPipelineStatusMaps() {
-  const data = await safeGet(`${DOMAIN}/api/v4/leads/pipelines`);
+  const data = await safeGet("/api/v4/leads/pipelines");
   const pipelines = data?._embedded?.pipelines ?? [];
 
   const pipelineNameById = new Map();
@@ -101,7 +169,7 @@ async function fetchPipelineStatusMaps() {
 
 // =================== USERS ===================
 async function fetchUsersMap() {
-  const data = await safeGet(`${DOMAIN}/api/v4/users`, { limit: 500 });
+  const data = await safeGet("/api/v4/users", { limit: 500 });
   return new Map((data?._embedded?.users ?? []).map((u) => [u.id, u.name]));
 }
 
@@ -114,7 +182,7 @@ async function fetchLeadsSince() {
   const all = [];
 
   while (true) {
-    const data = await safeGet(`${DOMAIN}/api/v4/leads`, {
+    const data = await safeGet("/api/v4/leads", {
       limit: LIMIT_PER_PAGE,
       page,
       "filter[created_at][from]": startUnix,
@@ -124,7 +192,9 @@ async function fetchLeadsSince() {
 
     const rows = data?._embedded?.leads ?? [];
     if (!rows.length) break;
+
     all.push(...rows);
+
     if (rows.length < LIMIT_PER_PAGE) break;
     page++;
   }
@@ -135,34 +205,44 @@ async function fetchLeadsSince() {
 // =================== CONTACTS ===================
 async function fetchContactsByIds(idList) {
   if (!idList.length) return new Map();
+
   const uniq = [...new Set(idList)];
   const out = new Map();
 
   for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
     const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
     const params = {};
-    chunk.forEach((id, idx) => (params[`id[${idx}]`] = id));
 
-    const data = await safeGet(`${DOMAIN}/api/v4/contacts`, params);
-    for (const c of data?._embedded?.contacts ?? []) out.set(c.id, c);
+    chunk.forEach((id, idx) => {
+      params[`id[${idx}]`] = id;
+    });
+
+    const data = await safeGet("/api/v4/contacts", params);
+    for (const c of data?._embedded?.contacts ?? []) {
+      out.set(c.id, c);
+    }
   }
+
   return out;
 }
 
 // =================== HELPERS ===================
 function normalizeCF(arr, prefix = "") {
   const out = {};
+
   (arr || []).forEach((f) => {
     const key = prefix + (f.field_name || `field_${f.field_id}`);
     const val = (f.values || []).map((v) => v.value).filter(Boolean).join(", ");
     out[key] = val || null;
   });
+
   return out;
 }
 
 function pickMainContact(lead, contactsMap) {
   const rel = lead?._embedded?.contacts ?? [];
   if (!rel.length) return null;
+
   const main = rel.find((c) => c.is_main) || rel[0];
   return contactsMap.get(main.id) || null;
 }
@@ -188,8 +268,12 @@ function flattenLead(lead, usersMap, pipelineNameById, statusInfoById, contactsM
     responsible_user_name: usersMap.get(lead.responsible_user_id) || null,
 
     created_at: dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss"),
-    updated_at: lead.updated_at ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss") : null,
-    closed_at: lead.closed_at ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss") : null,
+    updated_at: lead.updated_at
+      ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss")
+      : null,
+    closed_at: lead.closed_at
+      ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss")
+      : null,
 
     ...normalizeCF(lead.custom_fields_values),
     ...normalizeCF(contact?.custom_fields_values, "contact_"),
@@ -209,7 +293,9 @@ function saveCache() {
 function loadCache() {
   try {
     IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-  } catch {}
+  } catch {
+    IN_MEMORY.rows = [];
+  }
 }
 
 async function buildAndCache() {
@@ -229,34 +315,92 @@ async function buildAndCache() {
   saveCache();
 }
 
-// =================== ROUTE ===================
+// =================== ROUTES ===================
 router.get("/", async (req, res) => {
-  if (!IN_MEMORY.rows.length) {
-    loadCache();
-    if (!IN_MEMORY.rows.length) await buildAndCache();
+  try {
+    if (!IN_MEMORY.rows.length) {
+      loadCache();
+      if (!IN_MEMORY.rows.length) {
+        await buildAndCache();
+      }
+    }
+
+    res.json(IN_MEMORY.rows);
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err?.message || "Erro interno",
+    });
   }
-  res.json(IN_MEMORY.rows);
 });
 
 router.get("/debug", async (req, res) => {
-  const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
-  const endUnix = dayjs().unix();
+  try {
+    const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
+    const endUnix = dayjs().unix();
 
-  const raw = await safeGet(`${DOMAIN}/api/v4/leads`, {
-    limit: 5,
-    page: 1,
-    "filter[created_at][from]": startUnix,
-    "filter[created_at][to]": endUnix,
-    with: "contacts",
-  });
+    const raw = await safeGet("/api/v4/leads", {
+      limit: 5,
+      page: 1,
+      "filter[created_at][from]": startUnix,
+      "filter[created_at][to]": endUnix,
+      with: "contacts",
+    });
+
+    res.json({
+      ok: true,
+      filter: { from: startUnix, to: endUnix },
+      leads_count: raw?._embedded?.leads?.length ?? 0,
+      raw_sample: raw,
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err?.message || "Erro no debug",
+    });
+  }
+});
+
+router.get("/test-kommo", async (req, res) => {
+  const results = [];
+
+  for (const domain of DOMAINS) {
+    try {
+      const response = await axios.get(`${domain}/api/v4/account`, {
+        headers: {
+          Authorization: TOKEN,
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        timeout: 30000,
+        httpsAgent,
+        validateStatus: () => true,
+      });
+
+      results.push({
+        domain,
+        status: response.status,
+        data: response.data,
+      });
+    } catch (err) {
+      results.push({
+        domain,
+        status: err?.response?.status || null,
+        data: err?.response?.data || err.message,
+      });
+    }
+  }
 
   res.json({
-    filter: { from: startUnix, to: endUnix },
-    leads_count: raw?._embedded?.leads?.length ?? 0,
-    raw_sample: raw,
+    ok: true,
+    results,
   });
 });
 
-setInterval(buildAndCache, UPDATE_INTERVAL_MINUTES * 60000);
+setInterval(() => {
+  buildAndCache().catch((err) => {
+    console.error("[buildAndCache] error", err?.message || err);
+  });
+}, UPDATE_INTERVAL_MINUTES * 60000);
 
 export default router;
