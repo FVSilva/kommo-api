@@ -2,145 +2,135 @@ import { Router } from "express";
 import axios from "axios";
 import dayjs from "dayjs";
 import https from "https";
-import axiosRetry from "axios-retry";
 import fs from "fs";
 
 const router = Router();
 
 // =================== CONFIG ===================
-const DOMAINS = [
-  "https://suporteexodosaudecom.kommo.com",
-  "https://api-g.kommo.com",
-];
+const DOMAIN = "https://suporteexodosaudecom.kommo.com";
 
+// ⚠️ TOKEN DIRETO NO CÓDIGO (como você pediu)
 const TOKEN =
-  "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6Ijg3ZDM3MTQ2YmQ2YzJlMTNhMjdhZjRmYzVkYTNkNWUwZTkyNDkxYjMyY2I0MGYwYTJjYmYyMWRkMjg0YzI1MmM0YmZiMjlhNzhiZmE4ZmEwIn0.eyJhdWQiOiI5MDdlYTRlMS0wNWU4LTQ5NTktYjUwYi0yM2JlYTU5OWFmNTMiLCJqdGkiOiI4N2QzNzE0NmJkNmMyZTEzYTI3YWY0ZmM1ZGEzZDVlMGU5MjQ5MWIzMmNiNDBmMGEyY2JmMjFkZDI4NGMyNTJjNGJmYjI5YTc4YmZhOGZhMCIsImlhdCI6MTc3NTY5NTQ1OSwibmJmIjoxNzc1Njk1NDU5LCJleHAiOjE4MTQ0ODY0MDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJwdXNoX25vdGlmaWNhdGlvbnMiLCJmaWxlcyIsImNybSIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiMmYzOThhYjMtY2FhNy00YjEwLTg0OGQtYjk2MDQ1ZWI4MzdkIiwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.kIllfN-LwRo5s6j62v9prZ0Fj1SkQZicT_Q4yMG0kGbxmKrL73aLVb-xwD817QC_9LvMcWXMAC9L02nYHXX2gKDgJpq7MfiIME6jy2rQRiBZRWVVqLG4FncIDuX9yhvI-2Irhv9O16teF7UbPWYtiUXc6CvDtujMP5TpMSyNptXZkaxlsjDwNUXlut8SEsYAilMiUukOR9JCCfqUPDyP-iS6Dn-ccX9VyYqZdLlYPtyM74K8vFuBhzFx7W8Tfwa-Iqxj5vIzpMW0VzOyLuMwq6UsNbw8LDtsqBoRImqvSLvdjFgMg3kchZq4dveY40TZQ_XwoxFRjYhduYLbeswC5g";
+  "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6Ijg3ZDM3MTQ2YmQ2YzJlMTNhMjdhZjRmYzVkYTNkNWUwZTkyNDkxYjMyY2I0MGYwYTJjYmYyMWRkMjg0YzI1MmM0YmZiMjlhNzhiZmE4ZmEwIn0....";
 
 const START_DATE_DEFAULT = "2025-11-01";
 const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
-const THROTTLE_MS = 300;
-const UPDATE_INTERVAL_MINUTES = 30;
 const CACHE_FILE = "./cache.json";
+const UPDATE_INTERVAL_MINUTES = 30;
 
-// =================== HTTP INFRA ===================
-axiosRetry(axios, {
-  retries: 2,
-  retryDelay: axiosRetry.exponentialDelay,
-  retryCondition: (error) => {
-    const status = error?.response?.status;
-    if (status === 401 || status === 403) return false;
-    return axiosRetry.isNetworkOrIdempotentRequestError(error);
-  },
-});
+// 🔥 LIMITE REAL (seguro abaixo de 7 req/s)
+const MIN_INTERVAL_MS = 250; // 4 req/s
+const MAX_RETRIES = 2;
 
+// =================== INFRA ===================
 const httpsAgent = new https.Agent({
   keepAlive: true,
-  maxSockets: 60,
+  maxSockets: 20,
 });
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+let lastRequestAt = 0;
+
+async function throttle() {
+  const now = Date.now();
+  const diff = now - lastRequestAt;
+
+  if (diff < MIN_INTERVAL_MS) {
+    await wait(MIN_INTERVAL_MS - diff);
+  }
+
+  lastRequestAt = Date.now();
+}
+
+// =================== SAFE GET ===================
 async function safeGet(path, params = {}) {
-  let lastError = null;
+  const url = `${DOMAIN}${path}`;
 
-  for (const domain of DOMAINS) {
-    const url = `${domain}${path}`;
+  for (let attempt = 1; attempt <= MAX_RETRIES + 1; attempt++) {
+    try {
+      await throttle();
 
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        await wait(THROTTLE_MS);
+      const res = await axios.get(url, {
+        headers: {
+          Authorization: TOKEN,
+          Accept: "application/json",
+        },
+        params,
+        timeout: 30000,
+        httpsAgent,
+        validateStatus: () => true,
+      });
 
-        const res = await axios.get(url, {
-          headers: {
-            Authorization: TOKEN,
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-          params,
-          timeout: 30000,
-          httpsAgent,
-          validateStatus: () => true,
-        });
-
-        if (res.status >= 200 && res.status < 300) {
-          return res.data || {};
-        }
-
-        console.error(`[safeGet] attempt ${attempt} failed`, {
-          url,
-          status: res.status,
-          body: typeof res.data === "string" ? res.data : JSON.stringify(res.data),
-        });
-
-        lastError = {
-          domain,
-          url,
-          status: res.status,
-          body: res.data,
-        };
-
-        if (res.status === 401 || res.status === 403) {
-          break;
-        }
-
-        await wait(1500 * attempt);
-      } catch (err) {
-        const status = err?.response?.status ?? null;
-        const body = err?.response?.data ?? err.message;
-
-        console.error(`[safeGet] attempt ${attempt} exception`, {
-          url,
-          status,
-          body,
-        });
-
-        lastError = {
-          domain,
-          url,
-          status,
-          body,
-        };
-
-        if (status === 401 || status === 403) {
-          break;
-        }
-
-        await wait(1500 * attempt);
+      // ✅ sucesso
+      if (res.status >= 200 && res.status < 300) {
+        return res.data || {};
       }
+
+      console.error("[safeGet error]", {
+        url,
+        status: res.status,
+      });
+
+      // ❌ NÃO RETRY
+      if (res.status === 401 || res.status === 403) {
+        throw new Error(`Auth error ${res.status}`);
+      }
+
+      // 🔥 RATE LIMIT
+      if (res.status === 429) {
+        await wait(5000 * attempt);
+        continue;
+      }
+
+      // 🔁 5xx retry
+      if (res.status >= 500 && attempt <= MAX_RETRIES) {
+        await wait(2000 * attempt);
+        continue;
+      }
+
+      throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      if (attempt > MAX_RETRIES) {
+        throw err;
+      }
+
+      await wait(2000 * attempt);
     }
   }
 
-  console.error("[safeGet] all attempts failed", lastError);
-  return {};
+  throw new Error(`Failed: ${url}`);
 }
 
-// =================== STATUS MAP ===================
-const FIXED_STATUS_MAP = {
-  63763579: "Leads de Entrada",
-  66551103: "WhatsApp",
-  63763583: "Contato Inicial",
-  65147703: "Leads Nativo",
-  66735635: "Lista de Transmissão",
-  65962599: "Recaptação",
-  65158735: "Em Atendimento",
-  63763587: "Em Negociação",
-  67871247: "Cliente Futuro",
-  63763591: "Aguardando Documentos",
-  63763595: "Gerar Proposta",
-  64012623: "Aguardando Declaração de Saúde",
-  64012627: "Aguardando Operadora",
-  64012631: "Pendente Informação ADM",
-  64012635: "Aguardando Assinatura / 2° Aceite",
-  64012639: "Acompanhar 1° Pagamento",
-  69374483: "Lead Ganho | Indicação",
-  142: "Lead - Convertido",
-  143: "Lead - Perdido",
+// =================== CACHE ===================
+let IN_MEMORY = {
+  rows: [],
+  lastSync: null,
+  status: "never",
 };
 
-// =================== PIPELINES ===================
+let isSyncing = false;
+
+function saveCache() {
+  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY, null, 2));
+}
+
+function loadCache() {
+  try {
+    IN_MEMORY = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
+  } catch {}
+}
+
+// =================== FETCH ===================
+async function fetchUsersMap() {
+  const data = await safeGet("/api/v4/users", { limit: 250 });
+  return new Map((data?._embedded?.users ?? []).map((u) => [u.id, u.name]));
+}
+
 async function fetchPipelineStatusMaps() {
   const data = await safeGet("/api/v4/leads/pipelines");
+
   const pipelines = data?._embedded?.pipelines ?? [];
 
   const pipelineNameById = new Map();
@@ -148,32 +138,17 @@ async function fetchPipelineStatusMaps() {
 
   for (const p of pipelines) {
     pipelineNameById.set(p.id, p.name);
+
     for (const s of p.statuses ?? []) {
       statusInfoById.set(s.id, {
-        pipeline_id: p.id,
-        pipeline_name: p.name,
-        status_id: s.id,
         status_name: s.name,
       });
     }
   }
 
-  for (const [id, name] of Object.entries(FIXED_STATUS_MAP)) {
-    const sid = Number(id);
-    const old = statusInfoById.get(sid) || {};
-    statusInfoById.set(sid, { ...old, status_id: sid, status_name: name });
-  }
-
   return { pipelineNameById, statusInfoById };
 }
 
-// =================== USERS ===================
-async function fetchUsersMap() {
-  const data = await safeGet("/api/v4/users", { limit: 500 });
-  return new Map((data?._embedded?.users ?? []).map((u) => [u.id, u.name]));
-}
-
-// =================== LEADS ===================
 async function fetchLeadsSince() {
   const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
   const endUnix = dayjs().unix();
@@ -187,220 +162,88 @@ async function fetchLeadsSince() {
       page,
       "filter[created_at][from]": startUnix,
       "filter[created_at][to]": endUnix,
-      with: "contacts",
     });
 
     const rows = data?._embedded?.leads ?? [];
+
     if (!rows.length) break;
 
     all.push(...rows);
 
     if (rows.length < LIMIT_PER_PAGE) break;
+
     page++;
   }
 
   return all;
 }
 
-// =================== CONTACTS ===================
-async function fetchContactsByIds(idList) {
-  if (!idList.length) return new Map();
-
-  const uniq = [...new Set(idList)];
-  const out = new Map();
-
-  for (let i = 0; i < uniq.length; i += CONTACTS_CHUNK) {
-    const chunk = uniq.slice(i, i + CONTACTS_CHUNK);
-    const params = {};
-
-    chunk.forEach((id, idx) => {
-      params[`id[${idx}]`] = id;
-    });
-
-    const data = await safeGet("/api/v4/contacts", params);
-    for (const c of data?._embedded?.contacts ?? []) {
-      out.set(c.id, c);
-    }
-  }
-
-  return out;
-}
-
-// =================== HELPERS ===================
-function normalizeCF(arr, prefix = "") {
-  const out = {};
-
-  (arr || []).forEach((f) => {
-    const key = prefix + (f.field_name || `field_${f.field_id}`);
-    const val = (f.values || []).map((v) => v.value).filter(Boolean).join(", ");
-    out[key] = val || null;
-  });
-
-  return out;
-}
-
-function pickMainContact(lead, contactsMap) {
-  const rel = lead?._embedded?.contacts ?? [];
-  if (!rel.length) return null;
-
-  const main = rel.find((c) => c.is_main) || rel[0];
-  return contactsMap.get(main.id) || null;
-}
-
-// =================== FLATTEN ===================
-function flattenLead(lead, usersMap, pipelineNameById, statusInfoById, contactsMap) {
-  const statusId = Number(lead.status_id);
-  const statusInfo = statusInfoById.get(statusId) ?? {};
-  const contact = pickMainContact(lead, contactsMap);
-
-  return {
-    id: lead.id,
-    name: lead.name,
-    price: lead.price || 0,
-
-    pipeline_id: lead.pipeline_id,
-    pipeline_name: pipelineNameById.get(lead.pipeline_id) || null,
-
-    status_id: statusId,
-    status_name: statusInfo.status_name || FIXED_STATUS_MAP[statusId] || null,
-
-    responsible_user_id: lead.responsible_user_id || null,
-    responsible_user_name: usersMap.get(lead.responsible_user_id) || null,
-
-    created_at: dayjs.unix(lead.created_at).format("YYYY-MM-DD HH:mm:ss"),
-    updated_at: lead.updated_at
-      ? dayjs.unix(lead.updated_at).format("YYYY-MM-DD HH:mm:ss")
-      : null,
-    closed_at: lead.closed_at
-      ? dayjs.unix(lead.closed_at).format("YYYY-MM-DD HH:mm:ss")
-      : null,
-
-    ...normalizeCF(lead.custom_fields_values),
-    ...normalizeCF(contact?.custom_fields_values, "contact_"),
-
-    contact_id: contact?.id || null,
-    contact_name: contact?.name || null,
-  };
-}
-
-// =================== CACHE ===================
-let IN_MEMORY = { rows: [] };
-
-function saveCache() {
-  fs.writeFileSync(CACHE_FILE, JSON.stringify(IN_MEMORY.rows, null, 2));
-}
-
-function loadCache() {
-  try {
-    IN_MEMORY.rows = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-  } catch {
-    IN_MEMORY.rows = [];
-  }
-}
-
+// =================== BUILD ===================
 async function buildAndCache() {
-  const [leads, usersMap, maps] = await Promise.all([
-    fetchLeadsSince(),
-    fetchUsersMap(),
-    fetchPipelineStatusMaps(),
-  ]);
+  if (isSyncing) return;
+  isSyncing = true;
 
-  const contactIds = leads.flatMap((l) => l._embedded?.contacts?.map((c) => c.id) ?? []);
-  const contactsMap = await fetchContactsByIds(contactIds);
+  try {
+    console.log("🔄 Sync started");
 
-  IN_MEMORY.rows = leads.map((l) =>
-    flattenLead(l, usersMap, maps.pipelineNameById, maps.statusInfoById, contactsMap)
-  );
+    const maps = await fetchPipelineStatusMaps();
+    const usersMap = await fetchUsersMap();
+    const leads = await fetchLeadsSince();
 
-  saveCache();
+    IN_MEMORY.rows = leads.map((l) => ({
+      id: l.id,
+      name: l.name,
+      status_id: l.status_id,
+      pipeline_id: l.pipeline_id,
+      responsible_user_name: usersMap.get(l.responsible_user_id) || null,
+    }));
+
+    IN_MEMORY.lastSync = new Date().toISOString();
+    IN_MEMORY.status = "ok";
+
+    saveCache();
+
+    console.log("✅ Sync finished");
+  } catch (err) {
+    console.error("❌ Sync error:", err.message);
+
+    IN_MEMORY.status = "error";
+    IN_MEMORY.error = err.message;
+
+    saveCache();
+  }
+
+  isSyncing = false;
 }
 
 // =================== ROUTES ===================
+
+// 🔥 BI sempre lê cache (NUNCA chama API direto)
 router.get("/", async (req, res) => {
-  try {
-    if (!IN_MEMORY.rows.length) {
-      loadCache();
-      if (!IN_MEMORY.rows.length) {
-        await buildAndCache();
-      }
-    }
-
-    res.json(IN_MEMORY.rows);
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      error: err?.message || "Erro interno",
-    });
-  }
+  loadCache();
+  res.json(IN_MEMORY);
 });
 
-router.get("/debug", async (req, res) => {
-  try {
-    const startUnix = dayjs(START_DATE_DEFAULT).startOf("day").unix();
-    const endUnix = dayjs().unix();
-
-    const raw = await safeGet("/api/v4/leads", {
-      limit: 5,
-      page: 1,
-      "filter[created_at][from]": startUnix,
-      "filter[created_at][to]": endUnix,
-      with: "contacts",
-    });
-
-    res.json({
-      ok: true,
-      filter: { from: startUnix, to: endUnix },
-      leads_count: raw?._embedded?.leads?.length ?? 0,
-      raw_sample: raw,
-    });
-  } catch (err) {
-    res.status(500).json({
-      ok: false,
-      error: err?.message || "Erro no debug",
-    });
-  }
+// 🔧 rota manual de sync
+router.get("/sync", async (req, res) => {
+  await buildAndCache();
+  res.json({ ok: true });
 });
 
+// 🧪 teste auth
 router.get("/test-kommo", async (req, res) => {
-  const results = [];
-
-  for (const domain of DOMAINS) {
-    try {
-      const response = await axios.get(`${domain}/api/v4/account`, {
-        headers: {
-          Authorization: TOKEN,
-          Accept: "application/json",
-          "Content-Type": "application/json",
-        },
-        timeout: 30000,
-        httpsAgent,
-        validateStatus: () => true,
-      });
-
-      results.push({
-        domain,
-        status: response.status,
-        data: response.data,
-      });
-    } catch (err) {
-      results.push({
-        domain,
-        status: err?.response?.status || null,
-        data: err?.response?.data || err.message,
-      });
-    }
+  try {
+    const data = await safeGet("/api/v4/account");
+    res.json({ ok: true, data });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      error: err.message,
+    });
   }
-
-  res.json({
-    ok: true,
-    results,
-  });
 });
 
-setInterval(() => {
-  buildAndCache().catch((err) => {
-    console.error("[buildAndCache] error", err?.message || err);
-  });
-}, UPDATE_INTERVAL_MINUTES * 60000);
+// =================== AUTO SYNC ===================
+setInterval(buildAndCache, UPDATE_INTERVAL_MINUTES * 60000);
 
 export default router;
