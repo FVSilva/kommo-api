@@ -11,15 +11,14 @@ const DOMAIN = "https://suporteexodosaudecom.kommo.com";
 const TOKEN = "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiIsImp0aSI6IjM5MDhiZmRiNWVkNTE0N2ZjOTYzMjU1MDAyNTAxMzBhZDZmNTRmYWI1NWZhZTRjZWJhYzg5ODFlNGU0ZTc2OWVkNjQ2Zjg4MmZiMTQ2ODM3In0.eyJhdWQiOiIyZjExZGYxNC04ZTc4LTQyZmEtYTQxOC1mOWZkMmMxM2JkYjIiLCJqdGkiOiIzOTA4YmZkYjVlZDUxNDdmYzk2MzI1NTAwMjUwMTMwYWQ2ZjU0ZmFiNTVmYWU0Y2ViYWM4OTgxZTRlNGU3NjllZDY0NmY4ODJmYjE0NjgzNyIsImlhdCI6MTc3NDcxNDU2MSwibmJmIjoxNzc0NzE0NTYxLCJleHAiOjE4NTEzNzkyMDAsInN1YiI6IjEwNTY1Mzk1IiwiZ3JhbnRfdHlwZSI6IiIsImFjY291bnRfaWQiOjMyMTU1NDM1LCJiYXNlX2RvbWFpbiI6ImtvbW1vLmNvbSIsInZlcnNpb24iOjIsInNjb3BlcyI6WyJwdXNoX25vdGlmaWNhdGlvbnMiLCJmaWxlcyIsImNybSIsImZpbGVzX2RlbGV0ZSIsIm5vdGlmaWNhdGlvbnMiXSwiaGFzaF91dWlkIjoiZWY5YjE3NDgtMzY3Ny00MGU2LWJkMjYtMmZiM2E2M2Q3NzYwIiwiYXBpX2RvbWFpbiI6ImFwaS1nLmtvbW1vLmNvbSJ9.SVkjNnjG6gtFfjcC9kpVniBLHosmZKbfxDt7Q8fo6Wx676ZYYyRDWk-4fGEmV85Wd9xjtGwLQcHtHk25eXFXRsGsLY8_uIdf1OkXt67n0JLmK5LN_tPlPnzfk32rQcJRaZH7uXDSa8J2xwE2A9yhU15v_KmAfjlz7dcYooy-oXoLzd_O9tLcRdDcequ1Gpefl6ZWVNh8a46k7GCM-_tHUDHlBZOTT5hWYURl18-HsOAb0e11WE9Fmo_IiYMRIPTBDv1zkVuIS9NAbCFtsEQscW3V2U1UQdxHlo6szzGk5QbnCLJdy_yu_hS7DUQJ6K4VKH-3r2cNVX-uedxZ_dx6Ng";
 
 const START_DATE_DEFAULT = "2025-11-01";
-const LIMIT_PER_PAGE = 250; // maximo documentado pela Kommo
+const LIMIT_PER_PAGE = 250;
 const CONTACTS_CHUNK = 40;
-const CONTACTS_CONCURRENCY = 2; // baixo para manter folga
+const CONTACTS_CONCURRENCY = 2;
 const CACHE_FILE = "./cache.json";
 const UPDATE_INTERVAL_MINUTES = 30;
 
-// A Kommo limita a 7 req/s por IP.
-// Vamos trabalhar com margem de seguranca: 5 req/s = 1 req a cada 200ms
-const MIN_INTERVAL_MS = 200;
+// abaixo do limite da Kommo, com folga
+const MIN_INTERVAL_MS = 200; // 5 req/s
 const MAX_RETRIES = 2;
 const REQUEST_TIMEOUT_MS = 30000;
 
@@ -40,7 +39,7 @@ let IN_MEMORY = {
   meta: {
     lastSync: null,
     lastSuccessSync: null,
-    status: "never", // never | syncing | ok | error
+    status: "never",
     error: null,
     rowCount: 0,
     durationMs: null,
@@ -54,9 +53,7 @@ function saveCache() {
 function loadCache() {
   try {
     IN_MEMORY = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-  } catch {
-    // segue com o cache em memoria inicial
-  }
+  } catch {}
 }
 
 async function throttle() {
@@ -102,12 +99,10 @@ async function safeGet(path, params = {}) {
         return res.data || {};
       }
 
-      // 401/403 nao devem insistir
       if (res.status === 401 || res.status === 403) {
         throw new Error(`Kommo auth/block error ${res.status}`);
       }
 
-      // 429: reduzir bastante o ritmo
       if (res.status === 429) {
         if (attempt <= MAX_RETRIES) {
           await wait(4000 * attempt);
@@ -116,7 +111,6 @@ async function safeGet(path, params = {}) {
         throw new Error("Kommo rate limit exceeded 429");
       }
 
-      // 5xx e timeout de gateway: retry curto
       if ((res.status >= 500 || res.status === 408) && attempt <= MAX_RETRIES) {
         await wait(1500 * attempt);
         continue;
@@ -126,12 +120,10 @@ async function safeGet(path, params = {}) {
     } catch (err) {
       const msg = getErrorMessage(err);
 
-      // erros de autenticacao/bloqueio
       if (msg.includes("auth/block error") || attempt > MAX_RETRIES) {
         throw new Error(msg);
       }
 
-      // erros de rede / timeout do axios
       if (
         err?.code === "ECONNABORTED" ||
         err?.code === "ETIMEDOUT" ||
@@ -234,7 +226,6 @@ async function fetchLeadsSince() {
     all.push(...rows);
 
     if (rows.length < LIMIT_PER_PAGE) break;
-
     page++;
   }
 
@@ -342,9 +333,7 @@ function flattenLead(lead, usersMap, pipelineNameById, statusInfoById, contactsM
 
 // =================== BUILD ===================
 async function buildAndCache(force = false) {
-  if (isSyncing && !force) {
-    return syncPromise;
-  }
+  if (isSyncing && !force) return syncPromise;
 
   isSyncing = true;
   IN_MEMORY.meta.status = "syncing";
@@ -355,11 +344,8 @@ async function buildAndCache(force = false) {
 
   syncPromise = (async () => {
     try {
-      // primeiro busca dados pequenos
       const maps = await fetchPipelineStatusMaps();
       const usersMap = await fetchUsersMap();
-
-      // depois a parte mais pesada
       const leads = await fetchLeadsSince();
 
       const contactIds = leads.flatMap(
@@ -387,7 +373,6 @@ async function buildAndCache(force = false) {
       IN_MEMORY.meta.durationMs = Date.now() - startedAt;
 
       saveCache();
-
       return IN_MEMORY;
     } catch (err) {
       IN_MEMORY.meta.lastSync = new Date().toISOString();
@@ -395,9 +380,7 @@ async function buildAndCache(force = false) {
       IN_MEMORY.meta.error = getErrorMessage(err);
       IN_MEMORY.meta.durationMs = Date.now() - startedAt;
 
-      // preserva o cache anterior
       saveCache();
-
       return IN_MEMORY;
     } finally {
       isSyncing = false;
@@ -409,27 +392,28 @@ async function buildAndCache(force = false) {
 }
 
 // =================== ROUTES ===================
-
-// Power BI deve consumir esta rota.
-// Ela responde imediatamente com o ultimo cache salvo.
 router.get("/", async (req, res) => {
   loadCache();
 
-  // dispara sync em background quando ainda nao houver dados
-  if (!IN_MEMORY.rows.length && !isSyncing) {
+  // primeira carga: espera popular o cache para nao responder []
+  if (!IN_MEMORY.rows.length) {
+    const result = await buildAndCache();
+    return res.json(result.rows);
+  }
+
+  // se ja existe cache, responde instantaneamente
+  if (!isSyncing) {
     buildAndCache().catch(() => {});
   }
 
-  res.json(IN_MEMORY.rows);
+  return res.json(IN_MEMORY.rows);
 });
 
-// status detalhado para monitoramento
 router.get("/status", async (req, res) => {
   loadCache();
   res.json(IN_MEMORY.meta);
 });
 
-// sync manual
 router.get("/sync", async (req, res) => {
   const result = await buildAndCache(true);
 
@@ -440,7 +424,6 @@ router.get("/sync", async (req, res) => {
   });
 });
 
-// teste simples de auth
 router.get("/test-kommo", async (req, res) => {
   try {
     const data = await safeGet("/api/v4/account");
@@ -456,12 +439,10 @@ router.get("/test-kommo", async (req, res) => {
 // =================== STARTUP ===================
 loadCache();
 
-// se nao houver cache, inicia uma sync em background ao subir
 if (!IN_MEMORY.rows.length && !isSyncing) {
   buildAndCache().catch(() => {});
 }
 
-// sync periodica
 setInterval(() => {
   buildAndCache().catch(() => {});
 }, UPDATE_INTERVAL_MINUTES * 60000);
